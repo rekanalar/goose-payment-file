@@ -41,6 +41,25 @@ fn bic_ok(s: const u8[:]) -> bool {
     return true;
 }
 
+// lei_ok tells whether a text is a legal entity identifier: 20
+// characters, the first 18 letters or digits, the last two digits.
+fn lei_ok(t: const u8[:]) -> bool {
+    if t.len != 20 { return false; }
+    var i: i64 = 0;
+    while i < 18 {
+        let c = t[i];
+        if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) { return false; }
+        i += 1;
+    }
+    i = 18;
+    while i < 20 {
+        let c = t[i];
+        if c < '0' || c > '9' { return false; }
+        i += 1;
+    }
+    return true;
+}
+
 // settle_method_ok tells whether a text is a settlement method of the
 // message: INDA, INGA, COVE or CLRG.
 fn settle_method_ok(s: const u8[:]) -> bool {

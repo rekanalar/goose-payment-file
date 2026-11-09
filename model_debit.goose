@@ -8,6 +8,7 @@ namespace payment_file;
 
 import std;
 import finance from "rekanalar/goose-finance@v0.1.0";
+import model_party;
 
 // DebitInfo holds one payment block of a direct debit. The items of
 // the block are items[item_start .. item_start + item_count].
@@ -16,8 +17,11 @@ struct DebitInfo {
     batch_booking: bool,
     has_batch_booking: bool,
     creditor_name: const u8[:],
+    creditor_detail: PartyDetail,
     creditor_iban: const u8[:],
     creditor_bic: const u8[:],
+    ultimate_creditor_name: const u8[:],
+    ultimate_creditor_detail: PartyDetail,
     scheme_id: const u8[:],
     charge_bearer: const u8[:],
     seq_type: const u8[:],
@@ -43,16 +47,28 @@ struct DirectDebit {
     amendment: bool,
     has_amendment: bool,
     debtor_name: const u8[:],
+    debtor_detail: PartyDetail,
     debtor_iban: const u8[:],
     debtor_bic: const u8[:],
+    ultimate_creditor_name: const u8[:],
+    ultimate_creditor_detail: PartyDetail,
+    ultimate_debtor_name: const u8[:],
+    ultimate_debtor_detail: PartyDetail,
+    purpose: const u8[:],
     remittance: const u8[:],
+    structured_type: const u8[:],
+    structured_issuer: const u8[:],
+    structured_ref: const u8[:],
 }
 
 // new_debit_info gives a block with the zero values.
 fn new_debit_info() -> DebitInfo {
     return DebitInfo {
         id: "", batch_booking: false, has_batch_booking: false,
-        creditor_name: "", creditor_iban: "", creditor_bic: "", scheme_id: "",
+        creditor_name: "", creditor_detail: new_party_detail(),
+        creditor_iban: "", creditor_bic: "",
+        ultimate_creditor_name: "", ultimate_creditor_detail: new_party_detail(),
+        scheme_id: "",
         charge_bearer: "", seq_type: "", instrument: "",
         collection_year: 0, collection_month: 0, collection_day: 0, has_collection_date: false,
         item_start: 0, item_count: 0,
@@ -65,6 +81,11 @@ fn new_direct_debit() -> DirectDebit {
         end_to_end_id: "", amount: finance::Money { minor: 0, code: "" },
         mandate_id: "", signature_year: 0, signature_month: 0, signature_day: 0,
         has_signature_date: false, amendment: false, has_amendment: false,
-        debtor_name: "", debtor_iban: "", debtor_bic: "", remittance: "",
+        debtor_name: "", debtor_detail: new_party_detail(),
+        debtor_iban: "", debtor_bic: "",
+        ultimate_creditor_name: "", ultimate_creditor_detail: new_party_detail(),
+        ultimate_debtor_name: "", ultimate_debtor_detail: new_party_detail(),
+        purpose: "", remittance: "",
+        structured_type: "", structured_issuer: "", structured_ref: "",
     };
 }

@@ -52,17 +52,27 @@ struct OtherId {
 
 // PartyId holds the identification of a party. The kind tells whether
 // it is an organisation or a private person. Only an organisation
-// holds a BIC or BEI.
+// holds a BIC or BEI. The LEI exists in later message forms only, so
+// the reader fills it and the writer refuses it.
 struct PartyId {
     kind: i32,
     bic: const u8[:],
     other: OtherId,
+    lei: const u8[:],
 }
 
 // PartyDetail holds what a party carries beyond its name.
 struct PartyDetail {
     address: PostalAddress,
     id: PartyId,
+}
+
+// CdtrRef holds the three parts of a typed creditor reference: the
+// type code, the issuer and the reference itself.
+struct CdtrRef {
+    code: const u8[:],
+    issuer: const u8[:],
+    ref: const u8[:],
 }
 
 // address_empty tells whether an address holds no field.
@@ -83,7 +93,7 @@ fn other_empty(o: OtherId) -> bool {
 // and the writer share this rule.
 fn detail_empty(d: PartyDetail) -> bool {
     return address_empty(d.address) && d.id.kind == PARTY_NONE && d.id.bic.len == 0
-        && other_empty(d.id.other);
+        && d.id.lei.len == 0 && other_empty(d.id.other);
 }
 
 // new_address gives an address with no field.
@@ -102,10 +112,15 @@ fn new_other_id() -> OtherId {
 
 // new_party_id gives an identification that holds nothing.
 fn new_party_id() -> PartyId {
-    return PartyId { kind: PARTY_NONE, bic: "", other: new_other_id() };
+    return PartyId { kind: PARTY_NONE, bic: "", other: new_other_id(), lei: "" };
 }
 
 // new_party_detail gives a party detail that holds nothing.
 fn new_party_detail() -> PartyDetail {
     return PartyDetail { address: new_address(), id: new_party_id() };
+}
+
+// new_cdtr_ref gives a creditor reference that holds nothing.
+fn new_cdtr_ref() -> CdtrRef {
+    return CdtrRef { code: "", issuer: "", ref: "" };
 }

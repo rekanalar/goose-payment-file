@@ -11,10 +11,12 @@ import finance from "rekanalar/goose-finance@v0.1.0";
 import fault;
 import model;
 import model_debit;
+import model_party;
 import charset;
 import control;
 import enums;
 import read_pain;
+import read_party;
 
 // scheme_of gives the creditor scheme id under an element: the first
 // identification of Id/PrvtId/Othr or Id/OrgId/Othr.
@@ -131,10 +133,9 @@ fn parse_debit_block(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     }
     let cdtr = child(doc, id, "Cdtr");
     if cdtr >= 0 {
-        let nm = child(doc, cdtr, "Nm");
-        if nm >= 0 { blocks[cur].creditor_name = text_of(doc, nm, buf); }
-        let nf = check_text(blocks[cur].creditor_name, 140, "Nm", opts.epc_charset, lim);
-        if nf.kind != F_NONE { return nf; }
+        let nm, cf = read_party_full(doc, cdtr, MAX_140, true, opts, lim, buf, blocks[cur].creditor_detail, "Cdtr");
+        if cf.kind != F_NONE { return cf; }
+        blocks[cur].creditor_name = nm;
     }
     let cacct = child(doc, id, "CdtrAcct");
     if cacct >= 0 {
@@ -150,6 +151,12 @@ fn parse_debit_block(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
         blocks[cur].creditor_bic = bic_of(doc, cagt, buf);
         let bf = check_bic(blocks[cur].creditor_bic, opts, lim);
         if bf.kind != F_NONE { return bf; }
+    }
+    let uc = child(doc, id, "UltmtCdtr");
+    if uc >= 0 {
+        let nm, uf = read_party_full(doc, uc, MAX_140, false, opts, lim, buf, blocks[cur].ultimate_creditor_detail, "UltmtCdtr");
+        if uf.kind != F_NONE { return uf; }
+        blocks[cur].ultimate_creditor_name = nm;
     }
     let cb = child(doc, id, "ChrgBr");
     if cb >= 0 {
@@ -243,6 +250,12 @@ fn parse_debit(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
             if sf.kind != F_NONE { return sf; }
         }
     }
+    let uc2 = child(doc, id, "UltmtCdtr");
+    if uc2 >= 0 {
+        let nm, uf2 = read_party_full(doc, uc2, MAX_140, false, opts, lim, buf, items[at].ultimate_creditor_detail, "UltmtCdtr");
+        if uf2.kind != F_NONE { return uf2; }
+        items[at].ultimate_creditor_name = nm;
+    }
     let dagt = child(doc, id, "DbtrAgt");
     if dagt >= 0 {
         items[at].debtor_bic = bic_of(doc, dagt, buf);
@@ -251,10 +264,9 @@ fn parse_debit(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     }
     let dbtr = child(doc, id, "Dbtr");
     if dbtr >= 0 {
-        let nm = child(doc, dbtr, "Nm");
-        if nm >= 0 { items[at].debtor_name = text_of(doc, nm, buf); }
-        let nf = check_text(items[at].debtor_name, 140, "Nm", opts.epc_charset, lim);
-        if nf.kind != F_NONE { return nf; }
+        let nm, df2 = read_party_full(doc, dbtr, MAX_140, true, opts, lim, buf, items[at].debtor_detail, "Dbtr");
+        if df2.kind != F_NONE { return df2; }
+        items[at].debtor_name = nm;
     }
     let dacct = child(doc, id, "DbtrAcct");
     if dacct >= 0 {
@@ -265,13 +277,33 @@ fn parse_debit(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
             if ibf.kind != F_NONE { return ibf; }
         }
     }
+    let ud = child(doc, id, "UltmtDbtr");
+    if ud >= 0 {
+        let nm, uf3 = read_party_full(doc, ud, MAX_140, false, opts, lim, buf, items[at].ultimate_debtor_detail, "UltmtDbtr");
+        if uf3.kind != F_NONE { return uf3; }
+        items[at].ultimate_debtor_name = nm;
+    }
+    let purp_code, pf = read_purpose(doc, id, opts, lim, buf);
+    if pf.kind != F_NONE { return pf; }
+    items[at].purpose = purp_code;
     let rmt = child(doc, id, "RmtInf");
     if rmt >= 0 {
         let u = child(doc, rmt, "Ustrd");
         if u >= 0 {
             items[at].remittance = text_of(doc, u, buf);
-            let uf = check_text(items[at].remittance, 140, "Ustrd", opts.epc_charset, lim);
-            if uf.kind != F_NONE { return uf; }
+            let uf4 = check_text(items[at].remittance, MAX_140, "Ustrd", opts.epc_charset, lim);
+            if uf4.kind != F_NONE { return uf4; }
+        }
+        let strd = child(doc, rmt, "Strd");
+        if strd >= 0 {
+            let refi = child(doc, strd, "CdtrRefInf");
+            if refi >= 0 {
+                let r, cf2 = read_cdtr_ref(doc, refi, opts, lim, buf);
+                if cf2.kind != F_NONE { return cf2; }
+                items[at].structured_type = r.code;
+                items[at].structured_issuer = r.issuer;
+                items[at].structured_ref = r.ref;
+            }
         }
     }
     return no_fault();

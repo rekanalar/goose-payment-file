@@ -86,6 +86,9 @@ fn write_other(out: u8[>..]&, o: OtherId&, depth: i64, opts: PainWriteOptions,
 // identification writes nothing.
 fn write_party_id(out: u8[>..]&, p: PartyId&, depth: i64, opts: PainWriteOptions,
                   lim: Limits&) -> Fault {
+    if p.lei.len > 0 {
+        return fault(F_SYNTAX, 0, 0, "Id", "the written forms hold no element for an LEI");
+    }
     if p.kind == PARTY_NONE {
         if p.bic.len > 0 || !other_empty(p.other) {
             return fault(F_SYNTAX, 0, 0, "Id", "the identification holds a value and no kind");
@@ -142,35 +145,5 @@ fn party_full(out: u8[>..]&, tag: const u8[:], name: const u8[:], name_max: i64,
     f = write_party_id(out, d.id, depth + 1, opts, lim);
     if f.kind != F_NONE { return f; }
     close(out, tag, depth, opts);
-    return no_fault();
-}
-
-// write_cdtr_ref writes the structured creditor reference: the type
-// with its code and issuer, then the reference. The schema makes the
-// three parts optional.
-fn write_cdtr_ref(out: u8[>..]&, t: CreditTransfer, depth: i64, opts: PainWriteOptions,
-                  lim: Limits&) -> Fault {
-    if t.structured_type.len > 0 && !doc_type_ok(t.structured_type) {
-        return fault(F_SYNTAX, 0, 0, "Cd", "the document type is not RADM, RPIN, FXDR, DISP, PUOR or SCOR");
-    }
-    open(out, "Strd", depth, opts);
-    open(out, "CdtrRefInf", depth + 1, opts);
-    var f = no_fault();
-    if t.structured_type.len > 0 || t.structured_issuer.len > 0 {
-        open(out, "Tp", depth + 2, opts);
-        if t.structured_type.len > 0 {
-            open(out, "CdOrPrtry", depth + 3, opts);
-            f = text_leaf(out, "Cd", t.structured_type, MAX_4, true, depth + 4, opts, lim);
-            if f.kind != F_NONE { return f; }
-            close(out, "CdOrPrtry", depth + 3, opts);
-        }
-        f = opt_leaf(out, "Issr", t.structured_issuer, MAX_35, depth + 3, opts, lim);
-        if f.kind != F_NONE { return f; }
-        close(out, "Tp", depth + 2, opts);
-    }
-    f = opt_leaf(out, "Ref", t.structured_ref, MAX_35, depth + 2, opts, lim);
-    if f.kind != F_NONE { return f; }
-    close(out, "CdtrRefInf", depth + 1, opts);
-    close(out, "Strd", depth, opts);
     return no_fault();
 }

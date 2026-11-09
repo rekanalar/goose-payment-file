@@ -452,9 +452,8 @@ fn parse_pmt_inf(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     }
     let dbtr = child(doc, id, "Dbtr");
     if dbtr >= 0 {
-        let nm, det, nf = read_party_full(doc, dbtr, MAX_140, true, opts, lim, buf, "Dbtr");
+        let nm, nf = read_party_full(doc, dbtr, MAX_140, true, opts, lim, buf, payments[cur].debtor_detail, "Dbtr");
         if nf.kind != F_NONE { return nf; }
-        payments[cur].debtor_detail = det;
         payments[cur].debtor_name = nm;
     }
     let dacct = child(doc, id, "DbtrAcct");
@@ -479,9 +478,8 @@ fn parse_pmt_inf(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     }
     let udbtr = child(doc, id, "UltmtDbtr");
     if udbtr >= 0 {
-        let nm, det, nf = read_party_full(doc, udbtr, MAX_140, false, opts, lim, buf, "UltmtDbtr");
+        let nm, nf = read_party_full(doc, udbtr, MAX_140, false, opts, lim, buf, payments[cur].ultimate_debtor_detail, "UltmtDbtr");
         if nf.kind != F_NONE { return nf; }
-        payments[cur].ultimate_debtor_detail = det;
         payments[cur].ultimate_debtor_name = nm;
     }
     let rex = child(doc, id, "ReqdExctnDt");
@@ -553,9 +551,8 @@ fn parse_item(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     }
     let cdtr = child(doc, id, "Cdtr");
     if cdtr >= 0 {
-        let nm, det, nf = read_party_full(doc, cdtr, MAX_140, true, opts, lim, buf, "Cdtr");
+        let nm, nf = read_party_full(doc, cdtr, MAX_140, true, opts, lim, buf, items[cur].creditor_detail, "Cdtr");
         if nf.kind != F_NONE { return nf; }
-        items[cur].creditor_detail = det;
         items[cur].creditor_name = nm;
     }
     let cacct = child(doc, id, "CdtrAcct");
@@ -580,28 +577,19 @@ fn parse_item(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     }
     let udbtr = child(doc, id, "UltmtDbtr");
     if udbtr >= 0 {
-        let nm, det, nf = read_party_full(doc, udbtr, MAX_140, false, opts, lim, buf, "UltmtDbtr");
+        let nm, nf = read_party_full(doc, udbtr, MAX_140, false, opts, lim, buf, items[cur].ultimate_debtor_detail, "UltmtDbtr");
         if nf.kind != F_NONE { return nf; }
-        items[cur].ultimate_debtor_detail = det;
         items[cur].ultimate_debtor_name = nm;
     }
     let ucdtr = child(doc, id, "UltmtCdtr");
     if ucdtr >= 0 {
-        let nm, det, nf = read_party_full(doc, ucdtr, MAX_140, false, opts, lim, buf, "UltmtCdtr");
+        let nm, nf = read_party_full(doc, ucdtr, MAX_140, false, opts, lim, buf, items[cur].ultimate_creditor_detail, "UltmtCdtr");
         if nf.kind != F_NONE { return nf; }
-        items[cur].ultimate_creditor_detail = det;
         items[cur].ultimate_creditor_name = nm;
     }
-    let purp = child(doc, id, "Purp");
-    if purp >= 0 {
-        let cd = child(doc, purp, "Cd");
-        if cd >= 0 {
-            items[cur].purpose = text_of(doc, cd, buf);
-            if items[cur].purpose.len == 0 { return fault(F_SYNTAX, 0, 0, "Purp", "the purpose code is empty"); }
-            let pf = check_text(items[cur].purpose, 4, "Purp", opts.epc_charset, lim);
-            if pf.kind != F_NONE { return pf; }
-        }
-    }
+    let purp_code, pf = read_purpose(doc, id, opts, lim, buf);
+    if pf.kind != F_NONE { return pf; }
+    items[cur].purpose = purp_code;
     let rmt = child(doc, id, "RmtInf");
     if rmt >= 0 {
         let u = child(doc, rmt, "Ustrd");
@@ -614,8 +602,11 @@ fn parse_item(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
         if strd >= 0 {
             let refi = child(doc, strd, "CdtrRefInf");
             if refi >= 0 {
-                let cf = read_cdtr_ref(doc, refi, opts, lim, buf, items[cur]);
+                let r, cf = read_cdtr_ref(doc, refi, opts, lim, buf);
                 if cf.kind != F_NONE { return cf; }
+                items[cur].structured_type = r.code;
+                items[cur].structured_issuer = r.issuer;
+                items[cur].structured_ref = r.ref;
             }
         }
     }

@@ -227,7 +227,7 @@ fn write_pain001(header: GrpHeader, payments: PaymentInfo[>..]&, items: CreditTr
     }
     close(body, "CstmrCdtTrfInitn", 1, opts);
     close(body, "Document", 0, opts);
-    put(out, body);
+    out.append(body);
     return no_fault();
 }
 
@@ -288,6 +288,75 @@ fn write_pmt_inf(out: u8[>..]&, pay: PaymentInfo, items: CreditTransfer[>..]&,
 }
 
 // write_item writes one credit transfer item.
+// write_cdtr_ref writes the structured creditor reference: the type
+// with its code and issuer, then the reference. The schema makes the
+// three parts optional.
+fn write_cdtr_ref(out: u8[>..]&, code: const u8[:], issuer: const u8[:],
+                  ref_txt: const u8[:], depth: i64, opts: PainWriteOptions,
+                  lim: Limits&) -> Fault {
+    if code.len > 0 && !doc_type_ok(code) {
+        return fault(F_SYNTAX, 0, 0, "Cd", "the document type is not RADM, RPIN, FXDR, DISP, PUOR or SCOR");
+    }
+    // The schema makes the code element required inside the type. An
+    // issuer with no code would write a type with no code element.
+    if issuer.len > 0 && code.len == 0 {
+        return fault(F_SYNTAX, 0, 0, "Issr", "the reference type holds an issuer and no code");
+    }
+    open(out, "Strd", depth, opts);
+    open(out, "CdtrRefInf", depth + 1, opts);
+    var f = no_fault();
+    if code.len > 0 || issuer.len > 0 {
+        open(out, "Tp", depth + 2, opts);
+        if code.len > 0 {
+            open(out, "CdOrPrtry", depth + 3, opts);
+            f = text_leaf(out, "Cd", code, MAX_4, true, depth + 4, opts, lim);
+            if f.kind != F_NONE { return f; }
+            close(out, "CdOrPrtry", depth + 3, opts);
+        }
+        if issuer.len > 0 {
+            f = text_leaf(out, "Issr", issuer, MAX_35, true, depth + 3, opts, lim);
+            if f.kind != F_NONE { return f; }
+        }
+        close(out, "Tp", depth + 2, opts);
+    }
+    if ref_txt.len > 0 {
+        f = text_leaf(out, "Ref", ref_txt, MAX_35, true, depth + 2, opts, lim);
+        if f.kind != F_NONE { return f; }
+    }
+    close(out, "CdtrRefInf", depth + 1, opts);
+    close(out, "Strd", depth, opts);
+    return no_fault();
+}
+
+// write_remittance writes the purpose and the remittance of an item.
+// The schema is a sequence: the purpose code, then the unstructured
+// text, then the structured creditor reference. An empty text writes
+// no element. Both SEPA messages share this shape.
+fn write_remittance(out: u8[>..]&, purpose: const u8[:], remittance: const u8[:],
+                    code: const u8[:], issuer: const u8[:], ref_txt: const u8[:],
+                    depth: i64, opts: PainWriteOptions, lim: Limits&) -> Fault {
+    if purpose.len > 0 {
+        open(out, "Purp", depth, opts);
+        let f = text_leaf(out, "Cd", purpose, MAX_4, true, depth + 1, opts, lim);
+        if f.kind != F_NONE { return f; }
+        close(out, "Purp", depth, opts);
+    }
+    let has_ref = ref_txt.len > 0 || code.len > 0 || issuer.len > 0;
+    if remittance.len > 0 || has_ref {
+        open(out, "RmtInf", depth, opts);
+        if remittance.len > 0 {
+            let f = text_leaf(out, "Ustrd", remittance, MAX_140, true, depth + 1, opts, lim);
+            if f.kind != F_NONE { return f; }
+        }
+        if has_ref {
+            let f = write_cdtr_ref(out, code, issuer, ref_txt, depth + 1, opts, lim);
+            if f.kind != F_NONE { return f; }
+        }
+        close(out, "RmtInf", depth, opts);
+    }
+    return no_fault();
+}
+
 fn write_item(out: u8[>..]&, t: CreditTransfer, opts: PainWriteOptions, lim: Limits&) -> Fault {
     var f = no_fault();
     open(out, "CdtTrfTxInf", 3, opts);
@@ -315,25 +384,9 @@ fn write_item(out: u8[>..]&, t: CreditTransfer, opts: PainWriteOptions, lim: Lim
     if f.kind != F_NONE { return f; }
     f = party_full(out, "UltmtCdtr", t.ultimate_creditor_name, MAX_70, t.ultimate_creditor_detail, false, 4, opts, lim);
     if f.kind != F_NONE { return f; }
-    if t.purpose.len > 0 {
-        open(out, "Purp", 4, opts);
-        f = text_leaf(out, "Cd", t.purpose, 4, true, 5, opts, lim);
-        if f.kind != F_NONE { return f; }
-        close(out, "Purp", 4, opts);
-    }
-    let has_ref = t.structured_ref.len > 0 || t.structured_type.len > 0 || t.structured_issuer.len > 0;
-    if t.remittance.len > 0 || has_ref {
-        open(out, "RmtInf", 4, opts);
-        if t.remittance.len > 0 {
-            f = text_leaf(out, "Ustrd", t.remittance, 140, true, 5, opts, lim);
-            if f.kind != F_NONE { return f; }
-        }
-        if has_ref {
-            f = write_cdtr_ref(out, t, 5, opts, lim);
-            if f.kind != F_NONE { return f; }
-        }
-        close(out, "RmtInf", 4, opts);
-    }
+    let rf = write_remittance(out, t.purpose, t.remittance, t.structured_type,
+                              t.structured_issuer, t.structured_ref, 4, opts, lim);
+    if rf.kind != F_NONE { return rf; }
     close(out, "CdtTrfTxInf", 3, opts);
     return no_fault();
 }

@@ -11,10 +11,12 @@ import finance from "rekanalar/goose-finance@v0.1.0";
 import fault;
 import model;
 import model_debit;
+import model_party;
 import charset;
 import control;
 import enums;
 import write_pain;
+import write_party;
 
 // scheme_leaf writes the creditor scheme id as a private identification
 // with the scheme name SEPA.
@@ -66,21 +68,25 @@ fn write_pain008(header: GrpHeader, blocks: DebitInfo[>..]&, items: DirectDebit[
     // Check the whole message before the first byte goes out.
     let total, sf = sum_debits(items, 0, items.len);
     if sf.kind != F_NONE { return sf; }
-    let gf = write_group(out, "pain.008.001.02", "CstmrDrctDbtInitn", header, items.len, total, items[0].amount.code, opts, lim);
+    // The body is a scratch buffer. A fault leaves the output of the
+    // caller untouched.
+    var body: u8[>..] = [];
+    let gf = write_group(body, "pain.008.001.02", "CstmrDrctDbtInitn", header, items.len, total, items[0].amount.code, opts, lim);
     if gf.kind != F_NONE { return gf; }
     var b: i64 = 0;
     while b < blocks.len {
-        let bf = write_debit_block(out, blocks[b], items, opts, lim);
+        let bf = write_debit_block(body, blocks[b], items, opts, lim);
         if bf.kind != F_NONE { return bf; }
         b += 1;
     }
-    close(out, "CstmrDrctDbtInitn", 1, opts);
-    close(out, "Document", 0, opts);
+    close(body, "CstmrDrctDbtInitn", 1, opts);
+    close(body, "Document", 0, opts);
+    out.append(body);
     return no_fault();
 }
 
 // write_debit_block writes one payment block and its items.
-fn write_debit_block(out: u8[>..]&, blk: DebitInfo, items: DirectDebit[>..]&,
+fn write_debit_block(out: u8[>..]&, blk: DebitInfo&, items: DirectDebit[>..]&,
                      opts: PainWriteOptions, lim: Limits&) -> Fault {
     let start = blk.item_start as i64;
     let count = blk.item_count as i64;
@@ -115,11 +121,13 @@ fn write_debit_block(out: u8[>..]&, blk: DebitInfo, items: DirectDebit[>..]&,
     if !blk.has_collection_date { return fault(F_DATE, 0, 0, "ReqdColltnDt", "the collection date is missing or not valid"); }
     f = date_leaf(out, "ReqdColltnDt", blk.collection_year, blk.collection_month, blk.collection_day, 3, opts);
     if f.kind != F_NONE { return f; }
-    f = party(out, "Cdtr", blk.creditor_name, 3, opts, lim);
+    f = party_full(out, "Cdtr", blk.creditor_name, MAX_70, blk.creditor_detail, true, 3, opts, lim);
     if f.kind != F_NONE { return f; }
     f = account(out, "CdtrAcct", blk.creditor_iban, 3, opts, lim);
     if f.kind != F_NONE { return f; }
     f = agent(out, "CdtrAgt", blk.creditor_bic, 3, opts, lim);
+    if f.kind != F_NONE { return f; }
+    f = party_full(out, "UltmtCdtr", blk.ultimate_creditor_name, MAX_70, blk.ultimate_creditor_detail, false, 3, opts, lim);
     if f.kind != F_NONE { return f; }
     if blk.charge_bearer.len > 0 {
         if !charge_bearer_ok(blk.charge_bearer) { return fault(F_SYNTAX, 0, 0, "ChrgBr", "the charge bearer is not DEBT, CRED, SHAR or SLEV"); }
@@ -139,7 +147,7 @@ fn write_debit_block(out: u8[>..]&, blk: DebitInfo, items: DirectDebit[>..]&,
 }
 
 // write_debit writes one collection.
-fn write_debit(out: u8[>..]&, t: DirectDebit, opts: PainWriteOptions, lim: Limits&) -> Fault {
+fn write_debit(out: u8[>..]&, t: DirectDebit&, opts: PainWriteOptions, lim: Limits&) -> Fault {
     if !t.has_signature_date { return fault(F_DATE, 0, 0, "DtOfSgntr", "the mandate signature date is missing or not valid"); }
     open(out, "DrctDbtTxInf", 3, opts);
     open(out, "PmtId", 4, opts);
@@ -159,18 +167,19 @@ fn write_debit(out: u8[>..]&, t: DirectDebit, opts: PainWriteOptions, lim: Limit
     }
     close(out, "MndtRltdInf", 5, opts);
     close(out, "DrctDbtTx", 4, opts);
+    f = party_full(out, "UltmtCdtr", t.ultimate_creditor_name, MAX_70, t.ultimate_creditor_detail, false, 4, opts, lim);
+    if f.kind != F_NONE { return f; }
     f = agent(out, "DbtrAgt", t.debtor_bic, 4, opts, lim);
     if f.kind != F_NONE { return f; }
-    f = party(out, "Dbtr", t.debtor_name, 4, opts, lim);
+    f = party_full(out, "Dbtr", t.debtor_name, MAX_70, t.debtor_detail, true, 4, opts, lim);
     if f.kind != F_NONE { return f; }
     f = account(out, "DbtrAcct", t.debtor_iban, 4, opts, lim);
     if f.kind != F_NONE { return f; }
-    if t.remittance.len > 0 {
-        open(out, "RmtInf", 4, opts);
-        f = text_leaf(out, "Ustrd", t.remittance, 140, true, 5, opts, lim);
-        if f.kind != F_NONE { return f; }
-        close(out, "RmtInf", 4, opts);
-    }
+    f = party_full(out, "UltmtDbtr", t.ultimate_debtor_name, MAX_70, t.ultimate_debtor_detail, false, 4, opts, lim);
+    if f.kind != F_NONE { return f; }
+    let rf = write_remittance(out, t.purpose, t.remittance, t.structured_type,
+                              t.structured_issuer, t.structured_ref, 4, opts, lim);
+    if rf.kind != F_NONE { return rf; }
     close(out, "DrctDbtTxInf", 3, opts);
     return no_fault();
 }
