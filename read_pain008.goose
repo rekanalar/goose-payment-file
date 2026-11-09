@@ -201,13 +201,8 @@ fn parse_debit(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     }
     let inst = child(doc, id, "InstdAmt");
     if inst >= 0 {
-        let ccy, has = xml::attr_lookup(doc, doc.nodes[inst], "Ccy");
-        if !has || ccy.len != 3 { return fault(F_AMOUNT, 0, 0, "InstdAmt", "the amount names no currency"); }
-        var mbuf: u8[>..] = [];
-        let minor, af = parse_amount(text_of(doc, inst, mbuf), ccy, "InstdAmt");
+        let m, af = amount_of(doc, inst, "InstdAmt");
         if af.kind != F_NONE { return af; }
-        let m, okm = finance::money(minor, ccy);
-        if !okm { return fault(F_AMOUNT, 0, 0, "InstdAmt", "the currency table holds not the currency"); }
         items[at].amount = m;
     } else {
         return fault(F_SYNTAX, 0, 0, "InstdAmt", "the item holds no amount");

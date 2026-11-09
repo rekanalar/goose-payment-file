@@ -767,6 +767,21 @@ fn main() {
     test_ach_entry_limit();
     test_ach_overlapping_addenda();
     test_ach_fixture();
+    test_pacs008_round_trip();
+    test_pacs008_order();
+    test_pacs008_escape();
+    test_pacs008_writer_faults();
+    test_pacs008_atomic();
+    test_pacs008_mixed_currency();
+    test_pacs008_fixture_v06();
+    test_pacs008_fixture_v08();
+    test_pacs008_fixture_v09();
+    test_pacs008_reader_faults();
+    test_pacs008_hostile();
+    test_pacs008_switches();
+    test_pacs008_missing_parts();
+    test_pacs008_no_account();
+    test_pacs008_security();
     print("ok");
 }
 
@@ -1463,4 +1478,820 @@ fn pad_to(dst: u8[>..]&, s: const u8[:], width: i64) {
 fn put(dst: u8[>..]&, s: const u8[:]) {
     var i: i64 = 0;
     while i < s.len { dst.push(s[i]); i += 1; }
+}
+
+// The transactions of the sample message: one credit from a debtor to
+// a creditor in euros and one in dollars.
+// pacs_tx gives a valid transaction for the tests to change.
+fn pacs_tx() -> payment_file::Pacs008Tx {
+    var t = payment_file::new_pacs008_tx();
+    t.end_to_end_id = "E2E-1";
+    t.instruction_id = "INSTR-1";
+    t.transaction_id = "TX-1";
+    t.uetr = "123e4567-e89b-42d3-a456-426614174000";
+    t.amount = finance::Money { minor: 10050, code: "EUR" };
+    t.has_settlement_date = true;
+    t.settle_year = 2026; t.settle_month = 12; t.settle_day = 1;
+    t.charge_bearer = "SLEV";
+    t.debtor_name = "Acme Trading Ltd";
+    t.debtor_country = "NL";
+    t.debtor_iban = "NL91ABNA0417164300";
+    t.debtor_bic = "ABNANL2A";
+    t.creditor_name = "Creditor One";
+    t.creditor_country = "DE";
+    t.creditor_iban = "DE89370400440532013000";
+    t.creditor_bic = "COBADEFFXXX";
+    t.remittance = "Invoice 42";
+    return t;
+}
+
+// pacs_hdr gives a valid header for the tests to change.
+fn pacs_hdr() -> payment_file::Pacs008Header {
+    var h = payment_file::new_pacs008_header();
+    h.base.message_id = "MSG-2026-0002";
+    h.base.has_creation = true;
+    h.base.creation_year = 2026; h.base.creation_month = 11; h.base.creation_day = 9;
+    h.base.creation_minutes = 14 * 60 + 30;
+    h.base.creation_offset = 60;
+    h.settlement_method = "INDA";
+    h.has_settlement_date = true;
+    h.settle_year = 2026; h.settle_month = 12; h.settle_day = 1;
+    h.has_batch_booking = true;
+    h.batch_booking = false;
+    h.instructing_bic = "ABNANL2A";
+    h.instructed_bic = "COBADEFFXXX";
+    return h;
+}
+
+// write_one writes one transaction under a good header and gives the
+// kind of the fault.
+fn write_one(h: payment_file::Pacs008Header, t: payment_file::Pacs008Tx, epc: bool) -> i32 {
+    var txs: payment_file::Pacs008Tx[>..] = [];
+    txs.push(t);
+    var out: u8[>..] = [];
+    var wopts = payment_file::PainWriteOptions { epc_charset: epc, indent: false };
+    var lim = payment_file::default_limits();
+    let f = payment_file::write_pacs008(h, txs, wopts, lim, out);
+    return f.kind;
+}
+
+fn pacs_sample(opts: payment_file::PainWriteOptions, out: u8[>..]&) -> i32 {
+    var txs: payment_file::Pacs008Tx[>..] = [];
+    txs.push(pacs_tx());
+    var t2 = pacs_tx();
+    t2.end_to_end_id = "E2E-2";
+    t2.instruction_id = "";
+    t2.transaction_id = "";
+    t2.uetr = "";
+    t2.amount = finance::Money { minor: 250, code: "EUR" };
+    t2.debtor_country = "";
+    t2.creditor_name = "Creditor Two AG";
+    t2.creditor_country = "";
+    t2.creditor_iban = "CH9300762011623852957";
+    t2.creditor_bic = "POFICHBEXXX";
+    t2.remittance = "";
+    txs.push(t2);
+    var lim = payment_file::default_limits();
+    let f = payment_file::write_pacs008(pacs_hdr(), txs, opts, lim, out);
+    return f.kind;
+}
+
+// pacs_read reads a document and gives the kind of the fault.
+fn pacs_read(doc: const u8[:], skip: bool, ibans: bool, lim: payment_file::Limits&) -> i32 {
+    var h = payment_file::new_pacs008_header();
+    var txs: payment_file::Pacs008Tx[>..] = [];
+    var buf: u8[>..] = [];
+    var ropts = payment_file::PainOptions { skip_control_sum_check: skip, check_iban: ibans, epc_charset: true };
+    let r = payment_file::parse_pacs008(doc, lim, ropts, h, txs, buf);
+    return r.kind;
+}
+
+fn test_pacs008_round_trip() {
+    var out: u8[>..] = [];
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    let w = pacs_sample(wopts, out);
+    if w != 0 { print("FAIL pacs write ", w, "\n"); }
+    assert(w == 0);
+    assert(find(out, "pacs.008.001.08") >= 0);
+    assert(find(out, "<NbOfTxs>2</NbOfTxs>") >= 0);
+    assert(find(out, "<CtrlSum>103.00</CtrlSum>") >= 0);
+    assert(find(out, "<IntrBkSttlmAmt Ccy=\"EUR\">100.50</IntrBkSttlmAmt>") >= 0);
+    assert(find(out, "<TtlIntrBkSttlmAmt Ccy=\"EUR\">103.00</TtlIntrBkSttlmAmt>") >= 0);
+    assert(find(out, "<SttlmMtd>INDA</SttlmMtd>") >= 0);
+    assert(find(out, "<UETR>123e4567-e89b-42d3-a456-426614174000</UETR>") >= 0);
+    assert(find(out, "<BICFI>ABNANL2A</BICFI>") >= 0);
+    var h = payment_file::new_pacs008_header();
+    var txs: payment_file::Pacs008Tx[>..] = [];
+    var buf: u8[>..] = [];
+    var lim = payment_file::default_limits();
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    let text: const u8[:] = out[..];
+    let r = payment_file::parse_pacs008(text, lim, ropts, h, txs, buf);
+    if r.kind != 0 { print("FAIL pacs read ", payment_file::kind_name(r.kind), " ", r.tag, " ", r.detail, "\n"); }
+    assert(r.kind == 0);
+    assert(h.base.message_id == "MSG-2026-0002");
+    assert(h.base.has_creation && h.base.creation_year == 2026);
+    assert(h.base.count == 2 && h.base.has_control_sum && h.base.control_sum == 10300);
+    assert(h.settlement_method == "INDA");
+    assert(h.has_settlement_date && h.settle_day == 1);
+    assert(h.has_batch_booking && !h.batch_booking);
+    assert(h.instructing_bic == "ABNANL2A" && h.instructed_bic == "COBADEFFXXX");
+    assert(txs.len == 2);
+    assert(txs[0].end_to_end_id == "E2E-1" && txs[0].instruction_id == "INSTR-1" && txs[0].transaction_id == "TX-1");
+    assert(txs[0].uetr == "123e4567-e89b-42d3-a456-426614174000");
+    assert(txs[0].amount.minor == 10050 && txs[0].amount.code == "EUR");
+    assert(txs[0].has_settlement_date && txs[0].settle_month == 12);
+    assert(txs[0].charge_bearer == "SLEV");
+    assert(txs[0].debtor_name == "Acme Trading Ltd" && txs[0].debtor_country == "NL");
+    assert(txs[0].debtor_iban == "NL91ABNA0417164300" && txs[0].debtor_bic == "ABNANL2A");
+    assert(txs[0].creditor_name == "Creditor One" && txs[0].creditor_country == "DE");
+    assert(txs[0].creditor_iban == "DE89370400440532013000" && txs[0].creditor_bic == "COBADEFFXXX");
+    assert(txs[0].remittance == "Invoice 42");
+    assert(txs[1].end_to_end_id == "E2E-2" && txs[1].amount.minor == 250);
+    assert(txs[1].creditor_iban == "CH9300762011623852957");
+}
+
+fn test_pacs008_order() {
+    var out: u8[>..] = [];
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    let w = pacs_sample(wopts, out);
+    assert(w == 0);
+    // The order of the group header and of the transaction.
+    var tags = ["<MsgId>", "<CreDtTm>", "<BtchBookg>", "<NbOfTxs>", "<CtrlSum>", "<TtlIntrBkSttlmAmt",
+                "<IntrBkSttlmDt>", "<SttlmInf>", "<InstgAgt>", "<InstdAgt>", "<CdtTrfTxInf>",
+                "<PmtId>", "<EndToEndId>", "<UETR>", "<ChrgBr>", "<Dbtr>", "<DbtrAcct>", "<DbtrAgt>",
+                "<CdtrAgt>", "<Cdtr>", "<CdtrAcct>", "<RmtInf>"];
+    var last: i64 = -1;
+    var i: i64 = 0;
+    while i < tags.len {
+        let at = find(out, tags[i]);
+        assert(at >= 0);
+        assert(at > last);
+        last = at;
+        i += 1;
+    }
+}
+
+fn test_pacs008_escape() {
+    // The set check is off, so a name with markup reaches the file.
+    // The writer escapes it, so it cannot end the element.
+    var out: u8[>..] = [];
+    var wopts = payment_file::PainWriteOptions { epc_charset: false, indent: false };
+    var t1 = pacs_tx();
+    t1.debtor_name = "A & B <Ltd>";
+    t1.creditor_name = "Creditor & Co";
+    var txs: payment_file::Pacs008Tx[>..] = [];
+    txs.push(t1);
+    var h = pacs_hdr();
+    h.base.message_id = "MSG-ESC";
+    var lim = payment_file::default_limits();
+    let f = payment_file::write_pacs008(h, txs, wopts, lim, out);
+    assert(f.kind == 0);
+    assert(find(out, "A &amp; B &lt;Ltd&gt;") >= 0);
+    assert(find(out, "Creditor &amp; Co") >= 0);
+    assert(find(out, "<Ltd>") < 0);
+    var rh = payment_file::new_pacs008_header();
+    var rtxs: payment_file::Pacs008Tx[>..] = [];
+    var buf: u8[>..] = [];
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: false };
+    let text: const u8[:] = out[..];
+    let r = payment_file::parse_pacs008(text, lim, ropts, rh, rtxs, buf);
+    assert(r.kind == 0);
+    assert(rtxs[0].debtor_name == "A & B <Ltd>");
+}
+
+fn test_pacs008_writer_faults() {
+    var h = pacs_hdr();
+    // An empty list of transactions.
+    var none: payment_file::Pacs008Tx[>..] = [];
+    var out: u8[>..] = [];
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var lim = payment_file::default_limits();
+    let f0 = payment_file::write_pacs008(h, none, wopts, lim, out);
+    assert(f0.kind != 0);
+    // A bad settlement method.
+    var h2 = pacs_hdr();
+    h2.settlement_method = "XXXX";
+    assert(write_one(h2, pacs_tx(), true) == payment_file::F_SYNTAX);
+    // A bad UETR.
+    var t2 = pacs_tx();
+    t2.uetr = "not-a-uuid";
+    assert(write_one(h, t2, true) != 0);
+    // A negative amount.
+    var t3 = pacs_tx();
+    t3.amount = finance::Money { minor: -1, code: "EUR" };
+    assert(write_one(h, t3, true) == payment_file::F_AMOUNT);
+    // A bad IBAN.
+    var t4 = pacs_tx();
+    t4.debtor_iban = "NL91ABNA0417164301";
+    assert(write_one(h, t4, true) == payment_file::F_IBAN);
+    // An empty end-to-end id.
+    var t5 = pacs_tx();
+    t5.end_to_end_id = "";
+    assert(write_one(h, t5, true) == payment_file::F_SYNTAX);
+    // An IBAN and an other id in one account.
+    var t6 = pacs_tx();
+    t6.debtor_other_id = "123";
+    assert(write_one(h, t6, true) == payment_file::F_SYNTAX);
+    // A missing settlement date in the group header.
+    var h3 = pacs_hdr();
+    h3.has_settlement_date = false;
+    assert(write_one(h3, pacs_tx(), true) == payment_file::F_DATE);
+    // A transaction with no settlement date of its own is legal.
+    var t7 = pacs_tx();
+    t7.has_settlement_date = false;
+    assert(write_one(h, t7, true) == 0);
+    // A bad charge bearer.
+    var t8 = pacs_tx();
+    t8.charge_bearer = "XXXX";
+    assert(write_one(h, t8, true) == payment_file::F_SYNTAX);
+    // A country that is not two capital letters.
+    var t9 = pacs_tx();
+    t9.debtor_country = "nld";
+    assert(write_one(h, t9, true) == payment_file::F_SYNTAX);
+}
+
+fn test_pacs008_atomic() {
+    var lim = payment_file::default_limits();
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var out: u8[>..] = [];
+    let w = pacs_sample(wopts, out);
+    assert(w == 0);
+    let before = out.len;
+    var h = pacs_hdr();
+    h.base.message_id = "MSG-ATOMIC";
+    // The first extra message lands in the buffer.
+    var txs: payment_file::Pacs008Tx[>..] = [];
+    txs.push(pacs_tx());
+    let f = payment_file::write_pacs008(h, txs, wopts, lim, out);
+    assert(f.kind == 0);
+    assert(out.len > before);
+    // A fault after the header leaves the buffer as it was.
+    var before2 = out.len;
+    var txs2: payment_file::Pacs008Tx[>..] = [];
+    var t2 = pacs_tx();
+    t2.uetr = "123e4567-e89b-12d3-a456-426614174000";
+    txs2.push(t2);
+    let f2 = payment_file::write_pacs008(h, txs2, wopts, lim, out);
+    assert(f2.kind != 0);
+    assert(out.len == before2);
+}
+
+fn test_pacs008_mixed_currency() {
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var out: u8[>..] = [];
+    var txs: payment_file::Pacs008Tx[>..] = [];
+    txs.push(pacs_tx());
+    var t2 = pacs_tx();
+    t2.end_to_end_id = "E2E-2";
+    t2.amount = finance::Money { minor: 200, code: "USD" };
+    txs.push(t2);
+    var lim = payment_file::default_limits();
+    let f = payment_file::write_pacs008(pacs_hdr(), txs, wopts, lim, out);
+    assert(f.kind == 0);
+    assert(find(out, "<CtrlSum>") < 0);
+    assert(find(out, "<TtlIntrBkSttlmAmt") < 0);
+    assert(find(out, "<NbOfTxs>2</NbOfTxs>") >= 0);
+}
+
+// The message of the version .001.06. The element names of that
+// version hold the BIC under BICFI and no total of the header.
+fn test_pacs008_fixture_v06() {
+    let doc = """
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.06">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>MSG-06</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><TtlIntrBkSttlmAmt Ccy="EUR">10.00</TtlIntrBkSttlmAmt>
+<IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt><SttlmInf><SttlmMtd>INGA</SttlmMtd></SttlmInf>
+</GrpHdr><CdtTrfTxInf><PmtId><EndToEndId>E-06</EndToEndId><TxId>T-06</TxId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">10.00</IntrBkSttlmAmt><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<ChrgBr>SLEV</ChrgBr><Dbtr><Nm>Debtor SA</Nm><PstlAdr><Ctry>NL</Ctry></PstlAdr></Dbtr>
+<DbtrAcct><Id><IBAN>NL91ABNA0417164300</IBAN></Id></DbtrAcct>
+<DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>Creditor BV</Nm></Cdtr><CdtrAcct><Id><IBAN>BE68539007547034</IBAN></Id></CdtrAcct>
+<RmtInf><Ustrd>Invoice 7</Ustrd></RmtInf></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    var lim = payment_file::default_limits();
+    var h = payment_file::new_pacs008_header();
+    var txs: payment_file::Pacs008Tx[>..] = [];
+    var buf: u8[>..] = [];
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    let r = payment_file::parse_pacs008(doc, lim, ropts, h, txs, buf);
+    if r.kind != 0 { print("FAIL pacs06 ", payment_file::kind_name(r.kind), " ", r.tag, " ", r.detail, "\n"); }
+    assert(r.kind == 0);
+    assert(h.base.message_id == "MSG-06" && h.settlement_method == "INGA");
+    assert(h.has_settlement_date && h.settle_month == 2);
+    assert(h.base.count == 1);
+    assert(txs.len == 1);
+    assert(txs[0].end_to_end_id == "E-06" && txs[0].transaction_id == "T-06");
+    assert(txs[0].amount.minor == 1000);
+    assert(txs[0].debtor_country == "NL" && txs[0].debtor_bic == "ABNANL2A");
+    assert(txs[0].creditor_bic == "COBADEFFXXX");
+    assert(txs[0].remittance == "Invoice 7");
+}
+
+// The message of the version .001.08 with the clearing system member
+// id instead of a BIC.
+fn test_pacs008_fixture_v08() {
+    let doc = """
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>MSG-08</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>10.00</CtrlSum><TtlIntrBkSttlmAmt Ccy="EUR">10.00</TtlIntrBkSttlmAmt>
+<IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt><SttlmInf><SttlmMtd>CLRG</SttlmMtd></SttlmInf>
+</GrpHdr><CdtTrfTxInf><PmtId><EndToEndId>E-08</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">10.00</IntrBkSttlmAmt><ChrgBr>DEBT</ChrgBr>
+<Dbtr><Nm>Debtor SA</Nm></Dbtr>
+<DbtrAcct><Id><Othr><Id>ACCT-08</Id></Othr></Id></DbtrAcct>
+<DbtrAgt><FinInstnId><ClrSysMmbId><MmbId>234567891</MmbId></ClrSysMmbId></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><ClrSysMmbId><MmbId>000000010</MmbId></ClrSysMmbId></FinInstnId></CdtrAgt>
+<Cdtr><Nm>Creditor BV</Nm></Cdtr>
+<CdtrAcct><Id><Othr><Id>ACCT-09</Id></Othr></Id></CdtrAcct>
+</CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    var lim = payment_file::default_limits();
+    var h = payment_file::new_pacs008_header();
+    var txs: payment_file::Pacs008Tx[>..] = [];
+    var buf: u8[>..] = [];
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    let r = payment_file::parse_pacs008(doc, lim, ropts, h, txs, buf);
+    if r.kind != 0 { print("FAIL pacs08 ", payment_file::kind_name(r.kind), " ", r.tag, " ", r.detail, "\n"); }
+    assert(r.kind == 0);
+    assert(h.settlement_method == "CLRG");
+    assert(h.base.control_sum == 1000);
+    assert(txs.len == 1);
+    assert(txs[0].debtor_other_id == "ACCT-08" && txs[0].debtor_iban == "");
+    assert(txs[0].debtor_member_id == "234567891");
+    assert(txs[0].creditor_other_id == "ACCT-09");
+    assert(txs[0].creditor_member_id == "000000010");
+}
+
+// The message of the version .001.09 with the BIC under the name BIC
+// and the UETR in the payment id.
+fn test_pacs008_fixture_v09() {
+    let doc = """
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.09">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>MSG-09</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>10.00</CtrlSum>
+<IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt><SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf>
+</GrpHdr><CdtTrfTxInf><PmtId><EndToEndId>E-09</EndToEndId>
+<UETR>123e4567-e89b-42d3-a456-426614174000</UETR></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">10.00</IntrBkSttlmAmt><ChrgBr>SHAR</ChrgBr>
+<Dbtr><Nm>Debtor SA</Nm></Dbtr>
+<DbtrAcct><Id><IBAN>NL91ABNA0417164300</IBAN></Id></DbtrAcct>
+<DbtrAgt><FinInstnId><BIC>ABNANL2A</BIC></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BIC>COBADEFFXXX</BIC></FinInstnId></CdtrAgt>
+<Cdtr><Nm>Creditor BV</Nm></Cdtr><CdtrAcct><Id><IBAN>BE68539007547034</IBAN></Id></CdtrAcct>
+</CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    var lim = payment_file::default_limits();
+    var h = payment_file::new_pacs008_header();
+    var txs: payment_file::Pacs008Tx[>..] = [];
+    var buf: u8[>..] = [];
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    let r = payment_file::parse_pacs008(doc, lim, ropts, h, txs, buf);
+    if r.kind != 0 { print("FAIL pacs09 ", payment_file::kind_name(r.kind), " ", r.tag, " ", r.detail, "\n"); }
+    assert(r.kind == 0);
+    assert(txs.len == 1);
+    assert(txs[0].uetr == "123e4567-e89b-42d3-a456-426614174000");
+    assert(txs[0].debtor_bic == "ABNANL2A" && txs[0].creditor_bic == "COBADEFFXXX");
+    assert(txs[0].charge_bearer == "SHAR");
+}
+
+fn test_pacs008_reader_faults() {
+    var lim = payment_file::default_limits();
+    // A bad settlement method.
+    let bad_method = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>ZZZZ</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(bad_method, false, true, lim) == payment_file::F_SYNTAX);
+    // A count that differs from the transactions.
+    let bad_count = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>5</NbOfTxs><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(bad_count, false, true, lim) == payment_file::F_TOTAL);
+    // A control sum that differs from the transactions.
+    let bad_sum = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>99.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(bad_sum, false, true, lim) == payment_file::F_TOTAL);
+    // A total of the header that differs, with no control sum.
+    let bad_total = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><TtlIntrBkSttlmAmt Ccy="EUR">99.00</TtlIntrBkSttlmAmt>
+<IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(bad_total, false, true, lim) == payment_file::F_TOTAL);
+    // A bad UETR.
+    let bad_uetr = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId><UETR>nope</UETR></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(bad_uetr, false, true, lim) == payment_file::F_SYNTAX);
+    // A bad IBAN.
+    let bad_iban = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAcct><Id><IBAN>NL91ABNA0417164301</IBAN></Id></DbtrAcct>
+<DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(bad_iban, false, true, lim) == payment_file::F_IBAN);
+    // An amount with no currency.
+    let no_ccy = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt>1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(no_ccy, false, true, lim) == payment_file::F_AMOUNT);
+    // A message with no transaction.
+    let empty = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>0</NbOfTxs><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(empty, false, true, lim) == payment_file::F_SYNTAX);
+    // A document that is not well formed.
+    assert(pacs_read("<Document><FIToFICstmrCdtTrf>", false, true, lim) == payment_file::F_SYNTAX);
+}
+
+fn test_pacs008_hostile() {
+    var lim = payment_file::default_limits();
+    // A doctype and an entity. The package never expands an entity.
+    let entity = """
+<?xml version="1.0"?>
+<!DOCTYPE Document [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>&xxe;</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    let k = pacs_read(entity, false, true, lim);
+    assert(k == payment_file::F_SYNTAX || k == payment_file::F_CHARSET);
+    // A count that does not fit.
+    let big_count = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>99999999999999999999999</NbOfTxs><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(big_count, false, true, lim) != 0);
+    // An amount that does not fit.
+    let big_amount = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">92233720368547758.08</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(big_amount, false, true, lim) == payment_file::F_OVERFLOW);
+    // A control byte in a name.
+    let control = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C&#1;</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(control, false, true, lim) != 0);
+}
+
+fn test_pacs008_switches() {
+    var lim = payment_file::default_limits();
+    // The sum check off lets a wrong sum pass.
+    let bad_sum = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>99.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(bad_sum, true, true, lim) == 0);
+    // The IBAN check off lets a bad IBAN pass.
+    let bad_iban = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>1.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAcct><Id><IBAN>NL91ABNA0417164301</IBAN></Id></DbtrAcct>
+<DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(bad_iban, false, false, lim) == 0);
+    // The item limit holds.
+    var lim2 = payment_file::default_limits();
+    lim2.max_items = 0;
+    assert(pacs_read(bad_sum, false, true, lim2) == payment_file::F_LIMIT);
+}
+
+// The message of one transaction with the given parts. The parts that
+// are empty come out of the document.
+fn pacs_doc(count: const u8[:], method: const u8[:], e2e: const u8[:], bearer: const u8[:],
+            debtor: const u8[:], dbtr_agt: const u8[:], cdtr_agt: const u8[:], creditor: const u8[:]) -> const u8[:] {
+    if count == "zero" {
+        return """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>0</NbOfTxs><CtrlSum>1.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    }
+    if method == "none" {
+        return """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>1.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+</GrpHdr><CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    }
+    if e2e == "none" {
+        return """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>1.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    }
+    if bearer == "none" {
+        return """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>1.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    }
+    if debtor == "none" {
+        return """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>1.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    }
+    if dbtr_agt == "none" {
+        return """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>1.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    }
+    if cdtr_agt == "none" {
+        return """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>1.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    }
+    return """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>1.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm></Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm></Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+}
+
+fn test_pacs008_no_account() {
+    // The schema makes the account optional. A message without an
+    // account is written and read back.
+    var lim = payment_file::default_limits();
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var t1 = pacs_tx();
+    t1.debtor_iban = "";
+    t1.creditor_iban = "";
+    var txs: payment_file::Pacs008Tx[>..] = [];
+    txs.push(t1);
+    var h = pacs_hdr();
+    h.base.message_id = "MSG-NOACCT";
+    var out: u8[>..] = [];
+    let f = payment_file::write_pacs008(h, txs, wopts, lim, out);
+    assert(f.kind == 0);
+    assert(find(out, "<DbtrAcct>") < 0);
+    assert(find(out, "<CdtrAcct>") < 0);
+    var rh = payment_file::new_pacs008_header();
+    var rtxs: payment_file::Pacs008Tx[>..] = [];
+    var buf: u8[>..] = [];
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    let text: const u8[:] = out[..];
+    let r = payment_file::parse_pacs008(text, lim, ropts, rh, rtxs, buf);
+    assert(r.kind == 0);
+    assert(rtxs.len == 1);
+    assert(rtxs[0].debtor_iban == "" && rtxs[0].debtor_other_id == "");
+    assert(rtxs[0].creditor_iban == "" && rtxs[0].creditor_other_id == "");
+}
+
+fn test_pacs008_missing_parts() {
+    var lim = payment_file::default_limits();
+    // A claimed count of zero with one transaction.
+    assert(pacs_read(pacs_doc("zero", "", "", "", "", "", "", ""), false, true, lim) == payment_file::F_TOTAL);
+    // A group header with no settlement method.
+    assert(pacs_read(pacs_doc("", "none", "", "", "", "", "", ""), false, true, lim) == payment_file::F_SYNTAX);
+    // A transaction with no end-to-end id.
+    assert(pacs_read(pacs_doc("", "", "none", "", "", "", "", ""), false, true, lim) == payment_file::F_SYNTAX);
+    // A transaction with no charge bearer.
+    assert(pacs_read(pacs_doc("", "", "", "none", "", "", "", ""), false, true, lim) == payment_file::F_SYNTAX);
+    // A transaction with no debtor.
+    assert(pacs_read(pacs_doc("", "", "", "", "none", "", "", ""), false, true, lim) == payment_file::F_SYNTAX);
+    // A transaction with no debtor agent.
+    assert(pacs_read(pacs_doc("", "", "", "", "", "none", "", ""), false, true, lim) == payment_file::F_SYNTAX);
+    // A transaction with no creditor agent.
+    assert(pacs_read(pacs_doc("", "", "", "", "", "", "none", ""), false, true, lim) == payment_file::F_SYNTAX);
+    // A transaction with an empty debtor name and an empty creditor name.
+    assert(pacs_read(pacs_doc("", "", "", "", "", "", "", ""), false, true, lim) == payment_file::F_SYNTAX);
+}
+
+// test_pacs008_security covers the checks that stop a hostile message
+// from passing: the country of a party, the count of the group, the
+// currency of the group total and the sum of the group.
+fn test_pacs008_security() {
+    var lim = payment_file::default_limits();
+    // A country that is not two capital letters.
+    let bad_country = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>1.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm><PstlAdr><Ctry>ab</Ctry></PstlAdr></Dbtr>
+<DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(bad_country, false, true, lim) == payment_file::F_SYNTAX);
+    // A group header with no count of transactions.
+    let no_count = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<CtrlSum>1.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(no_count, false, true, lim) == payment_file::F_SYNTAX);
+    // A group total in another currency than the transactions.
+    let other_ccy = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><CtrlSum>1.00</CtrlSum>
+<TtlIntrBkSttlmAmt Ccy="USD">1.00</TtlIntrBkSttlmAmt>
+<IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(other_ccy, false, true, lim) == payment_file::F_AMOUNT);
+    // A group header with no sum of the transactions.
+    let no_sum = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>1</NbOfTxs><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(no_sum, false, true, lim) == payment_file::F_TOTAL);
+    // Two currencies in the transactions and a sum in the group header.
+    let mixed_sum = """
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+<FIToFICstmrCdtTrf><GrpHdr><MsgId>M</MsgId><CreDtTm>2026-02-03T08:00:00</CreDtTm>
+<NbOfTxs>2</NbOfTxs><CtrlSum>3.00</CtrlSum><IntrBkSttlmDt>2026-02-03</IntrBkSttlmDt>
+<SttlmInf><SttlmMtd>INDA</SttlmMtd></SttlmInf></GrpHdr>
+<CdtTrfTxInf><PmtId><EndToEndId>E</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="EUR">1.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf>
+<CdtTrfTxInf><PmtId><EndToEndId>F</EndToEndId></PmtId>
+<IntrBkSttlmAmt Ccy="USD">2.00</IntrBkSttlmAmt><ChrgBr>SLEV</ChrgBr>
+<Dbtr><Nm>D</Nm></Dbtr><DbtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></DbtrAgt>
+<CdtrAgt><FinInstnId><BICFI>COBADEFFXXX</BICFI></FinInstnId></CdtrAgt>
+<Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
+""";
+    assert(pacs_read(mixed_sum, false, true, lim) == payment_file::F_TOTAL);
 }

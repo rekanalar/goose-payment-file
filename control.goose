@@ -11,6 +11,7 @@ import finance from "rekanalar/goose-finance@v0.1.0";
 import fault;
 import model;
 import model_debit;
+import model_pacs008;
 
 // checked_add gives the sum of two values. It gives false when the
 // sum does not fit in an i64.
@@ -77,6 +78,35 @@ fn sum_debits(items: DirectDebit[>..]&, start: i64, count: i64) -> i64, Fault {
         k += 1;
     }
     return sum, no_fault();
+}
+
+// sum_settle adds the settlement amounts of txs[start .. start + count].
+// It gives the sum and the currency of the first transaction. When the
+// transactions hold two currencies, it gives mixed as true and a sum of
+// zero, because a total over two currencies means nothing. A negative
+// amount and an overflow are faults in every case.
+fn sum_settle(txs: Pacs008Tx[>..]&, start: i64, count: i64) -> i64, bool, Fault {
+    let rf = range_fault(start, count, txs.len);
+    if rf.kind != F_NONE { return 0, false, rf; }
+    if count == 0 { return 0, false, no_fault(); }
+    let ccy = txs[start].amount.code;
+    var sum: i64 = 0;
+    var mixed = false;
+    var k: i64 = 0;
+    while k < count {
+        let t = txs[start + k];
+        if t.amount.code != ccy {
+            mixed = true;
+            if t.amount.minor < 0 { return 0, false, fault(F_AMOUNT, 0, 0, "Amt", "the schema allows no negative amount"); }
+        } else {
+            let s, af = add_minor(sum, t.amount.minor);
+            if af.kind != F_NONE { return 0, false, af; }
+            sum = s;
+        }
+        k += 1;
+    }
+    if mixed { return 0, true, no_fault(); }
+    return sum, false, no_fault();
 }
 
 // amount_text writes the text of an amount: minor units with the

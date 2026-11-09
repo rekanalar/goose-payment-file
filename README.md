@@ -3,11 +3,16 @@
 [![ci](https://github.com/rekanalar/goose-payment-file/actions/workflows/ci.yml/badge.svg)](https://github.com/rekanalar/goose-payment-file/actions/workflows/ci.yml)
 
 The files that start a payment, for the [Goose](https://github.com/aardappel/goose) language.
-The package writes and reads three files. They are the SEPA `pain.001`
-credit transfer, the `pain.008` direct debit and the NACHA ACH file.
+The package writes and reads four files.
+Three files start at a customer: the SEPA `pain.001` credit transfer,
+the `pain.008` direct debit and the NACHA ACH file.
+The fourth file moves money between banks: the `pacs.008` customer
+credit transfer.
+
 The SEPA writers emit the pain.001.001.03 and pain.008.001.02 forms
-that the bank portals take. The readers take the versions `.001.03` to `.001.10` and
-`.001.02` to `.001.08` by element name.
+that the bank portals take.
+The `pacs.008` writer emits the pacs.008.001.08 form.
+The readers take the later versions by element name.
 
 Money is an integer count of minor units with the exponent of its
 currency. The package uses no float.
@@ -18,7 +23,7 @@ Every parse is one linear pass with no recursion. Every size has a limit.
 Add these lines to the root file of the program that uses it:
 
 ```goose
-import payment_file from "rekanalar/goose-payment-file@v0.3.0";
+import payment_file from "rekanalar/goose-payment-file@v0.4.0";
 import xml from "rekanalar/goose-xml@v2.0.0";
 import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
@@ -54,6 +59,11 @@ the line to add.
 | `AchAddenda` | record 7, type 05: the payment related text |
 | `AchOptions` | the reader switches: `skip_total_check`, `check_routing` |
 | `new_ach_file_header()`, `new_ach_batch()`, `new_ach_entry()`, `new_ach_addenda()`, `new_ach_options()` | the zero values of the ACH structs |
+| `write_pacs008(header, txs, opts, lim, out)` | writes the customer credit transfer as pacs.008.001.08 XML |
+| `parse_pacs008(input, lim, opts, header, txs, buf)` | reads a customer credit transfer of any `.001.NN` form |
+| `Pacs008Header` | the group header, the settlement method, the settlement date, the two agents |
+| `Pacs008Tx` | one credit transfer: the ids, the UETR, the amount, the parties, the agents, the remittance |
+| `new_pacs008_header()`, `new_pacs008_tx()` | the zero values of the two structs |
 | `kind_name(kind)` | the name of a fault kind |
 
 ## The checks
@@ -122,15 +132,68 @@ transaction codes are the checking, savings, general ledger and loan
 codes. The file holds two digits of the year, so the dates run from
 2000 to 2099.
 
+## The pacs.008 message
+
+The `pacs.008` message moves a customer credit transfer from one bank
+to the next bank. The message holds one group header and a flat list of
+transactions. It holds no payment block.
+
+The group header holds the message id, the creation time and the batch
+booking flag. It holds the count of the transactions, the control sum
+and the total of the settlement amounts. It holds the settlement date
+and the settlement method. The writer computes the count and the
+control sum from the transactions. The caller cannot set them.
+
+The settlement method is one of `INDA`, `INGA`, `COVE` and `CLRG`. Any
+other value is a fault in the reader and in the writer.
+
+A transaction holds the payment id, the settlement amount, the
+settlement date and the charge bearer. It holds the debtor, the debtor
+account and the debtor agent. It holds the creditor agent, the
+creditor, the creditor account and the remittance. The payment id holds
+the instruction id, the end-to-end id, the transaction id and the
+UETR.
+
+The UETR is a version 4 UUID in lowercase hexadecimal with hyphens. The
+writer and the reader refuse any other shape, because a bank rejects a
+UETR that is no UUID.
+
+The writer emits the `pacs.008.001.08` form. The reader takes every
+`.001.NN` form by element name. The names of the versions `.001.06`,
+`.001.08` and `.001.09` are verified against Go `moov-io/iso20022` and
+the ISO schemas.
+
+The reader compares the count of the group header with the
+transactions. It compares the control sum with the sum of the amounts.
+It compares the total of the group with the same sum. The compare uses
+the value, so `103.0000` equals `103.00`. The option
+`skip_control_sum_check` turns the sum compares off.
+
+The total of the group names the currency of the transactions. A total
+in another currency is a fault. A message with two currencies has no
+sum, so the reader checks the count only.
+
 ## Limits
 
-- **The writers emit one form each: pain.001.001.03 and
-  pain.008.001.02.** The readers take the later versions too. Python
-  `sepaxml` writes the same forms.
+- **The writers emit one form each: pain.001.001.03,
+  pain.008.001.02 and pacs.008.001.08.** The readers take the later
+  versions too. Python `sepaxml` writes the same SEPA forms.
 - **The writer computes the control sum from the items.** The caller
   cannot set it. A caller who needs another total writes the file by
   hand.
-- **`pacs.008` stays out.** A later release adds it.
+- **The `pacs.008` reader takes three verified versions.** They are
+  `.001.06`, `.001.08` and `.001.09`. The other versions use the same
+  names. No schema validator ran, because none is installed.
+- **The `pacs.008` model holds no settlement account.** It holds no
+  ultimate party, no intermediary agent and no charges information. The
+  writer emits none of them. The reader skips them.
+- **The `pacs.008` writer emits no structured remittance.** It writes
+  the first remittance text only. The reader reads the first text only.
+- **The `pacs.008` reader refuses a two-currency message with a sum.**
+  A sum over two currencies means nothing. The writer writes no sum for
+  such a message.
+- **The `pacs.008` reader refuses a group header with no count.** The
+  count is mandatory in the schema.
 - **The NACHA file takes nine SEC codes.** They are PPD, CCD, WEB,
   TEL, CTX, ARC, BOC, POP and RCK. It holds addenda of type 05 only. IAT batches, ADV
   records, returns and notices of change stay out. The reader refuses
@@ -199,6 +262,27 @@ NACHA protections beyond the reference library `moov-io/ach`:
 - **The writer writes all or nothing.** A fault leaves the output
   buffer as it was. The addenda ranges of the entries must follow each
   other, so no addendum text is lost or written twice.
+
+`pacs.008` protections beyond the reference library `moov-io/iso20022`:
+
+- **The UETR has the shape of a version 4 UUID.** The reference library
+  takes any text. A bank rejects a UETR that is no UUID.
+- **The settlement method is checked against its list.** The four
+  codes are `INDA`, `INGA`, `COVE` and `CLRG`. The reference library
+  takes any text.
+- **The country of a party is two capital letters.** The writer and the
+  reader refuse any other form.
+- **The count of the group header must stand.** A message with no count
+  is a fault. A count that differs from the transactions is a fault.
+- **The total of the group names the currency of the transactions.** A
+  total in another currency is a fault. The reference library stores the
+  amount as a float and never compares it.
+- **A group header with no sum is a fault.** The reader compares both
+  sums with the transactions.
+- **The amounts are exact.** No call of the package puts a float into
+  an amount. The reference library stores the control sum as a float64.
+- **The writer writes all or nothing.** A fault leaves the output
+  buffer as it was.
 
 Risks that stay:
 

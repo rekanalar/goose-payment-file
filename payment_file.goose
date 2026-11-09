@@ -16,6 +16,7 @@ import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
 import fault;
 import model;
 import model_debit;
+import model_pacs008;
 import enums;
 import charset;
 import control;
@@ -25,6 +26,8 @@ import write_pain008;
 import read_pain008;
 import model_ach;
 import write_ach;
+import write_pacs008;
+import read_pacs008;
 import read_ach;
 
 // Limits bounds every size the package touches. The defaults are

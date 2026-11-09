@@ -20,6 +20,7 @@ struct GrpHeader {
     creation_minutes: i32,
     creation_offset: i32,
     count: i64,
+    has_count: bool,
     has_control_sum: bool,
     control_sum: i64,
     control_currency: const u8[:],
@@ -70,7 +71,7 @@ fn new_header() -> GrpHeader {
     return GrpHeader {
         message_id: "", has_creation: false, creation_year: 0, creation_month: 0,
         creation_day: 0, creation_minutes: 0, creation_offset: 0, count: 0,
-        has_control_sum: false, control_sum: 0, control_currency: "", initiator: "",
+        has_count: false, has_control_sum: false, control_sum: 0, control_currency: "", initiator: "",
     };
 }
 

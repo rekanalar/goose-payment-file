@@ -27,6 +27,7 @@ struct PainOptions {
 
 // child gives the first child element with the local name.
 fn child(doc: xml::Doc&, id: i32, local: const u8[:]) -> i32 {
+    if id < 0 { return -1; }
     var c = doc.nodes[id].first_child;
     while c >= 0 {
         let n = doc.nodes[c];
@@ -121,6 +122,20 @@ fn check_claimed(claimed: const u8[:], total: i64, ccy: const u8[:], tag: const 
         return v, fault_sums(F_TOTAL, 0, tag, "the control sum differs from the items", total, v);
     }
     return v, no_fault();
+}
+
+// amount_of reads an amount element: the text is the decimal value and
+// the Ccy attribute is the currency. The tag names the element in a fault.
+fn amount_of(doc: xml::Doc&, node: i32, tag: const u8[:]) -> finance::Money, Fault {
+    let none = finance::Money { minor: 0, code: "" };
+    let ccy, has = xml::attr_lookup(doc, doc.nodes[node], "Ccy");
+    if !has || ccy.len != 3 { return none, fault(F_AMOUNT, 0, 0, tag, "the amount names no currency"); }
+    var mbuf: u8[>..] = [];
+    let minor, af = parse_amount(text_of(doc, node, mbuf), ccy, tag);
+    if af.kind != F_NONE { return none, af; }
+    let m, ok = finance::money(minor, ccy);
+    if !ok { return none, fault(F_AMOUNT, 0, 0, tag, "the currency table holds not the currency"); }
+    return m, no_fault();
 }
 
 // bic_of gives the BIC of an agent element. The element name is BIC
@@ -285,6 +300,7 @@ fn parse_group(doc: xml::Doc&, msg: i32, opts: PainOptions&, lim: Limits&,
         let n, okn = digits_value(text_of(doc, nb, buf));
         if !okn { return -1, fault(F_SYNTAX, 0, 0, "NbOfTxs", "the count of transactions is not a number"); }
         header.count = n;
+        header.has_count = true;
     }
     let init = child(doc, grp, "InitgPty");
     if init >= 0 {
@@ -508,18 +524,8 @@ fn parse_item(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     if amt >= 0 {
         let inst = child(doc, amt, "InstdAmt");
         if inst >= 0 {
-            let ccy, has = xml::attr_lookup(doc, doc.nodes[inst], "Ccy");
-            if !has || ccy.len != 3 {
-                return fault(F_AMOUNT, 0, 0, "InstdAmt", "the amount names no currency");
-            }
-            var mbuf: u8[>..] = [];
-            let text = text_of(doc, inst, mbuf);
-            let minor, af = parse_amount(text, ccy, "InstdAmt");
+            let m, af = amount_of(doc, inst, "InstdAmt");
             if af.kind != F_NONE { return af; }
-            let m, ok = finance::money(minor, ccy);
-            if !ok {
-                return fault(F_AMOUNT, 0, 0, "InstdAmt", "the currency table holds not the currency");
-            }
             items[cur].amount = m;
         } else {
             return fault(F_SYNTAX, 0, 0, "InstdAmt", "the item holds no instructed amount");

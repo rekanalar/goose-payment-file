@@ -153,17 +153,23 @@ fn flag_leaf(out: u8[>..]&, tag: const u8[:], v: bool, depth: i64, opts: PainWri
     else { leaf(out, tag, "false", depth, opts); }
 }
 
-// instd_amt writes the InstdAmt element with its currency attribute.
-fn instd_amt(out: u8[>..]&, minor: i64, code: const u8[:], depth: i64, opts: PainWriteOptions) -> Fault {
+// amt_leaf writes an amount element with its currency attribute:
+// <tag Ccy="EUR">12.34</tag>.
+fn amt_leaf(out: u8[>..]&, tag: const u8[:], minor: i64, code: const u8[:], depth: i64, opts: PainWriteOptions) -> Fault {
     var at: u8[>..] = [];
     let f = amount_text(at, minor, code);
     if f.kind != F_NONE { return f; }
     if opts.indent { var w: i64 = 0; while w < depth { put(out, "  "); w += 1; } }
-    put(out, "<InstdAmt Ccy=\""); put(out, code); put(out, "\">");
+    out.push('<'); put(out, tag); put(out, " Ccy=\""); put(out, code); put(out, "\">");
     put(out, at);
-    put(out, "</InstdAmt>");
+    put(out, "</"); put(out, tag); out.push('>');
     if opts.indent { out.push('\n'); }
     return no_fault();
+}
+
+// instd_amt writes the InstdAmt element with its currency attribute.
+fn instd_amt(out: u8[>..]&, minor: i64, code: const u8[:], depth: i64, opts: PainWriteOptions) -> Fault {
+    return amt_leaf(out, "InstdAmt", minor, code, depth, opts);
 }
 
 // date_leaf writes a date element. A date that is no civil date is a fault.
