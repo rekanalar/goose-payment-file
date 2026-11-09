@@ -23,6 +23,9 @@ import write_pain;
 import read_pain;
 import write_pain008;
 import read_pain008;
+import model_ach;
+import write_ach;
+import read_ach;
 
 // Limits bounds every size the package touches. The defaults are
 // safe; a caller may lower them.
@@ -32,6 +35,9 @@ struct Limits {
     max_items: i64,
     max_nesting: i64,
     max_text: i64,
+    max_batches: i64,
+    max_entries: i64,
+    max_addenda: i64,
 }
 
 // default_limits gives the limits of the package. A caller may lower
@@ -43,5 +49,8 @@ fn default_limits() -> Limits {
         max_items: 10000,
         max_nesting: 16,
         max_text: 140,
+        max_batches: 100,
+        max_entries: 10000,
+        max_addenda: 10000,
     };
 }

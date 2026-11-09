@@ -36,6 +36,18 @@ fn epc_ok(text: const u8[:]) -> bool {
     return true;
 }
 
+// ascii_ok tells whether every byte of the text is a printable ASCII
+// byte: space to 126. A control byte and a byte above 126 fail. This
+// is the character set of the NACHA file.
+fn ascii_ok(text: const u8[:]) -> bool {
+    var i: i64 = 0;
+    while i < text.len {
+        if text[i] < ' ' || text[i] > 126 { return false; }
+        i += 1;
+    }
+    return true;
+}
+
 // check_text checks one text against the EPC set and a length limit.
 // The flag turns the set check off, never the length check. The limit
 // of the caller and the limit of the package both hold: the shorter
