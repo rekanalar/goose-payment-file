@@ -13,6 +13,8 @@ The SEPA writers emit the pain.001.001.03 and pain.008.001.02 forms
 that the bank portals take.
 The `pacs.008` writer emits the pacs.008.001.08 form.
 The readers take the later versions by element name.
+The SEPA part holds the feature set of the mature libraries. The
+README names every element that stays out, and says why.
 
 Money is an integer count of minor units with the exponent of its
 currency. The package uses no float.
@@ -23,7 +25,7 @@ Every parse is one linear pass with no recursion. Every size has a limit.
 Add these lines to the root file of the program that uses it:
 
 ```goose
-import payment_file from "rekanalar/goose-payment-file@v0.15.0";
+import payment_file from "rekanalar/goose-payment-file@v1.0.0";
 import xml from "rekanalar/goose-xml@v2.0.0";
 import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
