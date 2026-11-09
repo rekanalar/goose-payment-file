@@ -2085,6 +2085,124 @@ fn test_birth_and_pre_notification() {
     assert(swap_kind(p001, "<CityOfBirth>Lyon</CityOfBirth>", "") == payment_file::F_SYNTAX);
 }
 
+// sample_amend writes a direct debit whose mandate holds amendment
+// details and an electronic signature. The mode picks one fault:
+// 0 none, 1 the flag is false, 2 an agent with a BIC and a marker,
+// 3 a bad IBAN, 4 a bad final date.
+fn sample_amend(opts: payment_file::PainWriteOptions, mode: i32, out: u8[>..]&) -> i32 {
+    var items: payment_file::DirectDebit[>..] = [];
+    var t = payment_file::new_direct_debit();
+    t.end_to_end_id = "E2E-A1";
+    let m, ok = finance::money(1000, "EUR");
+    if !ok { return -1; }
+    t.amount = m;
+    t.mandate_id = "NEW-MANDATE";
+    t.signature_year = 2025; t.signature_month = 6; t.signature_day = 1;
+    t.has_signature_date = true;
+    t.has_amendment = true;
+    t.amendment = true;
+    t.debtor_name = "Debtor A";
+    t.debtor_iban = "DE89370400440532013000";
+    t.electronic_signature = "SIG-1";
+    t.amendment_details.mandate_id = "OLD-MANDATE";
+    t.amendment_details.creditor_name = "Old Creditor";
+    t.amendment_details.creditor_detail.id.kind = payment_file::PARTY_ORG;
+    t.amendment_details.creditor_detail.id.other.id = "DE98ZZZ09999999999";
+    t.amendment_details.creditor_detail.id.other.scheme_proprietary = "SEPA";
+    t.amendment_details.creditor_agent.present = true;
+    t.amendment_details.creditor_agent.bic = "ABNANL2A";
+    t.amendment_details.debtor_name = "Old Debtor";
+    t.amendment_details.debtor_iban = "NL91ABNA0417164300";
+    t.amendment_details.debtor_agent.present = true;
+    t.amendment_details.debtor_agent.other_id = "SMNDA";
+    t.amendment_details.debtor_agent_iban = "CH9300762011623852957";
+    t.amendment_details.final_year = 2027; t.amendment_details.final_month = 1; t.amendment_details.final_day = 31;
+    t.amendment_details.has_final_date = true;
+    if mode == 1 { t.amendment = false; }
+    if mode == 2 { t.amendment_details.debtor_agent.bic = "ABNANL2A"; }
+    if mode == 3 { t.amendment_details.debtor_iban = "NL91ABNA0417164301"; }
+    if mode == 4 { t.amendment_details.final_day = 32; }
+    items.push(t);
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var b = payment_file::new_debit_info();
+    b.id = "DD-A";
+    b.creditor_name = "Club Treasurer";
+    b.creditor_iban = "NL91ABNA0417164300";
+    b.creditor_bic = "ABNANL2A";
+    b.scheme_id = "DE98ZZZ09999999999";
+    b.seq_type = "RCUR";
+    b.instrument = "CORE";
+    b.collection_year = 2026; b.collection_month = 12; b.collection_day = 1;
+    b.has_collection_date = true;
+    b.item_count = 1;
+    blocks.push(b);
+    var h = payment_file::new_header();
+    h.message_id = "DD-MSG-A";
+    h.has_creation = true;
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    h.initiator = "Club Treasurer";
+    var lim = payment_file::default_limits();
+    let f = payment_file::write_pain008(h, blocks, items, opts, lim, out);
+    return f.kind;
+}
+
+// The amendment details of a mandate write in schema order, read back,
+// and a bad value is a fault.
+fn test_amendment_details() {
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var out: u8[>..] = [];
+    assert(sample_amend(wopts, 0, out) == 0);
+    let ind = find(out, "<AmdmntInd>true</AmdmntInd><AmdmntInfDtls><OrgnlMndtId>OLD-MANDATE</OrgnlMndtId>");
+    let cs = find_from(out, "<OrgnlCdtrSchmeId><Nm>Old Creditor</Nm><Id><OrgId><Othr><Id>DE98ZZZ09999999999</Id><SchmeNm><Prtry>SEPA</Prtry></SchmeNm></Othr></OrgId></Id></OrgnlCdtrSchmeId>", ind);
+    let ca = find_from(out, "<OrgnlCdtrAgt><FinInstnId><BIC>ABNANL2A</BIC></FinInstnId></OrgnlCdtrAgt>", cs);
+    let db = find_from(out, "<OrgnlDbtr><Nm>Old Debtor</Nm></OrgnlDbtr>", ca);
+    let da = find_from(out, "<OrgnlDbtrAcct><Id><IBAN>NL91ABNA0417164300</IBAN></Id></OrgnlDbtrAcct>", db);
+    let ag = find_from(out, "<OrgnlDbtrAgt><FinInstnId><Othr><Id>SMNDA</Id></Othr></FinInstnId></OrgnlDbtrAgt>", da);
+    let ac = find_from(out, "<OrgnlDbtrAgtAcct><Id><IBAN>CH9300762011623852957</IBAN></Id></OrgnlDbtrAgtAcct>", ag);
+    let fd = find_from(out, "<OrgnlFnlColltnDt>2027-01-31</OrgnlFnlColltnDt></AmdmntInfDtls><ElctrncSgntr>SIG-1</ElctrncSgntr></MndtRltdInf>", ac);
+    assert(ind >= 0 && cs > ind && ca > cs && db > ca && da > db && ag > da && ac > ag && fd > ac);
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    var lim = payment_file::default_limits();
+    var h = payment_file::new_header();
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var items: payment_file::DirectDebit[>..] = [];
+    var buf: u8[>..] = [];
+    let text: const u8[:] = out[..];
+    let r = payment_file::parse_pain008(text, lim, ropts, h, blocks, items, buf);
+    if r.kind != 0 { print("FAIL amend read ", payment_file::kind_name(r.kind), " ", r.tag, " ", r.detail, "\n"); }
+    assert(r.kind == payment_file::F_NONE);
+    let a = items[0].amendment_details;
+    assert(a.mandate_id == "OLD-MANDATE" && a.creditor_name == "Old Creditor");
+    assert(a.creditor_detail.id.kind == payment_file::PARTY_ORG && a.creditor_detail.id.other.id == "DE98ZZZ09999999999");
+    assert(a.creditor_agent.present && a.creditor_agent.bic == "ABNANL2A" && a.creditor_agent.other_id.len == 0);
+    assert(a.debtor_name == "Old Debtor" && a.debtor_iban == "NL91ABNA0417164300");
+    assert(a.debtor_agent.present && a.debtor_agent.other_id == "SMNDA" && a.debtor_agent.bic.len == 0);
+    assert(a.debtor_agent_iban == "CH9300762011623852957");
+    assert(a.has_final_date && a.final_year == 2027 && a.final_month == 1 && a.final_day == 31);
+    assert(items[0].electronic_signature == "SIG-1");
+    // The writer refuses each bad model and keeps the buffer.
+    var k: i32 = 1;
+    while k <= 4 {
+        var bad: u8[>..] = [];
+        bad.push('O');
+        let wk = sample_amend(wopts, k, bad);
+        assert(wk != 0);
+        assert(bad.len == 1);
+        k += 1;
+    }
+    // A scheme id with no name is a valid original party.
+    assert(swap_debit(text, "<Nm>Old Creditor</Nm>", "", "<Zz>", "<Zz>") == payment_file::F_NONE);
+    // The reader refuses a second copy, a false indicator, an agent
+    // with both forms, a bad IBAN, a bad date and a missing FinInstnId.
+    assert(swap_debit(text, "<OrgnlMndtId>OLD-MANDATE</OrgnlMndtId>", "<OrgnlMndtId>A</OrgnlMndtId><OrgnlMndtId>B</OrgnlMndtId>", "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+    assert(swap_debit(text, "<AmdmntInd>true</AmdmntInd>", "<AmdmntInd>false</AmdmntInd>", "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+    assert(swap_debit(text, "<Id>SMNDA</Id>", "<Id>SMNDA</Id></Othr><BIC>ABNANL2A</BIC><Othr><Id>X</Id>", "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+    assert(swap_debit(text, "<IBAN>NL91ABNA0417164300</IBAN></Id></OrgnlDbtrAcct>", "<IBAN>NL91ABNA0417164301</IBAN></Id></OrgnlDbtrAcct>", "<Zz>", "<Zz>") != payment_file::F_NONE);
+    assert(swap_debit(text, "<OrgnlFnlColltnDt>2027-01-31</OrgnlFnlColltnDt>", "<OrgnlFnlColltnDt>2027-02-30</OrgnlFnlColltnDt>", "<Zz>", "<Zz>") == payment_file::F_DATE);
+    assert(swap_debit(text, "<OrgnlDbtrAgt><FinInstnId><Othr><Id>SMNDA</Id></Othr></FinInstnId></OrgnlDbtrAgt>", "<OrgnlDbtrAgt></OrgnlDbtrAgt>", "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+    assert(swap_debit(text, "<ElctrncSgntr>SIG-1</ElctrncSgntr>", "<ElctrncSgntr>A</ElctrncSgntr><ElctrncSgntr>B</ElctrncSgntr>", "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+}
+
 // The service level comes back over a round trip in both messages.
 fn test_service_level_round_trip() {
     var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
@@ -2147,6 +2265,7 @@ fn main() {
     test_service_level_round_trip();
     test_mandatory_elements();
     test_birth_and_pre_notification();
+    test_amendment_details();
     test_code_lists();
     test_missing_amount();
     test_amount_overflow();

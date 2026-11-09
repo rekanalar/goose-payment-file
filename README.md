@@ -23,7 +23,7 @@ Every parse is one linear pass with no recursion. Every size has a limit.
 Add these lines to the root file of the program that uses it:
 
 ```goose
-import payment_file from "rekanalar/goose-payment-file@v0.14.0";
+import payment_file from "rekanalar/goose-payment-file@v0.15.0";
 import xml from "rekanalar/goose-xml@v2.0.0";
 import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
@@ -42,7 +42,7 @@ the line to add.
 | `write_pain008(header, blocks, items, opts, lim, out)` | writes the direct debit as pain.008.001.02 XML |
 | `parse_pain008(input, lim, opts, header, blocks, items, buf)` | reads a direct debit of `.001.02` to `.001.08` |
 | `DebitInfo` | one debit block: the creditor with its address and identification, the block ultimate creditor, the scheme id, the service level, the sequence type, the instrument, the collection date, the item range |
-| `DirectDebit` | one collection: the amount, the mandate, the debtor with its address and identification, the ultimate parties, the purpose, the remittance, the typed creditor reference, the pre-notification |
+| `DirectDebit` | one collection: the amount, the mandate, the debtor with its address and identification, the ultimate parties, the purpose, the remittance, the typed creditor reference, the pre-notification, the amendment details, the electronic signature |
 | `new_debit_info()`, `new_direct_debit()` | the zero values of the two debit structs |
 | `GrpHeader` | the message id, the creation time, the count, the control sum, the initiator |
 | `PaymentInfo` | one payment block: the id, the flags, the service level, the debtor, the ultimate debtor, the execution date, the item range |
@@ -160,6 +160,15 @@ A private person holds the date and place of birth. The date, the
 city and the country are required. The province is optional. An
 organisation holds no birth data, and that is a fault. A person with
 birth data and nothing else is a valid identification.
+
+The mandate holds the amendment details and the electronic signature.
+The details hold the original mandate id and the original creditor
+scheme id. They hold the original debtor, the agents and the accounts.
+They hold the original final collection date.
+
+Every part of the details is optional. A scheme id may change with
+no name. An agent holds a BIC or the scheme marker, such as `SMNDA`.
+The details need the amendment flag.
 
 The direct debit holds a pre-notification: an id and a date. Both are
 optional. The writer writes them after the mandate information.
@@ -443,8 +452,15 @@ sum, so the reader checks the count only.
   package does not check the other reversal rules of NACHA.
 - **The writer needs each batch to hold an entry.** The reader refuses
   an empty batch too.
-- **The writer writes the amendment flag alone.** It writes no
-  amendment details. The reader ignores them.
+- **The mandate frequency and the collection dates stay out.** The
+  mandate holds `FrstColltnDt`, `FnlColltnDt` and `Frqcy` in the
+  schema. The EPC rulebook does not use them. The later forms hold the
+  original frequency, the reason and the tracking days in the amendment
+  details. The reader ignores all of these.
+- **The amendment details need the flag.** The writer and the reader
+  refuse details when the amendment flag is not true.
+- **An amendment account holds an IBAN only.** An account with another
+  identifier stays out.
 - **The application header, the authorization element and the category
   purpose stay out.** The full external code lists stay out too. The
   reader ignores them.
@@ -562,6 +578,10 @@ Protections beyond the reference libraries:
   missing date, city or country is a fault. So is a country that is not
   two capital letters. So is an organisation with birth data. So is
   a second copy of a birth element or of a pre-notification element.
+- **The reader refuses a second copy of an amendment element.** The
+  first copy never hides a later one. It refuses details with a flag
+  that is not true. It refuses an agent with a BIC and a marker. It
+  refuses an agent with no `FinInstnId`. It checks each amendment IBAN.
 - **The BIC of a party identification is checked.** The same rule as
   the agent applies. The rule is looser than the schema pattern.
 - **The LEI of a party identification is checked.** It holds 20

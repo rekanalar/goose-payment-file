@@ -84,6 +84,122 @@ fn parse_pain008(input: const u8[:], lim: Limits&, opts: PainOptions&,
     return no_fault();
 }
 
+// read_original_agent reads an agent of a mandate amendment. The agent
+// holds a BIC or an other identifier.
+fn read_original_agent(doc: xml::Doc&, id: i32, tag: const u8[:], opts: PainOptions&, lim: Limits&,
+                       buf: u8[>..]&) -> OriginalAgent, Fault {
+    var a = new_original_agent();
+    let fi, f0 = need(doc, id, "FinInstnId");
+    if f0.kind != F_NONE { return a, f0; }
+    a.present = true;
+    a.bic = bic_of(doc, id, buf);
+    let bf = check_bic(a.bic, opts, lim);
+    if bf.kind != F_NONE { return a, bf; }
+    let oth = child(doc, fi, "Othr");
+    if oth >= 0 {
+        let oid, of = opt_text(doc, child(doc, oth, "Id"), "Id", MAX_35, opts, lim, buf);
+        if of.kind != F_NONE { return a, of; }
+        a.other_id = oid;
+    }
+    if a.bic.len > 0 && a.other_id.len > 0 {
+        return a, fault(F_SYNTAX, 0, 0, tag, "the agent holds a BIC and an other identifier");
+    }
+    return a, no_fault();
+}
+
+// read_original_party reads a party of a mandate amendment. The name
+// is optional here, as in the writer.
+fn read_original_party(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
+                       buf: u8[>..]&, d: PartyDetail&) -> const u8[:], Fault {
+    let sf = single(doc, id, "Nm");
+    if sf.kind != F_NONE { return "", sf; }
+    let nm, f0 = opt_text(doc, child(doc, id, "Nm"), "Nm", MAX_140, opts, lim, buf);
+    if f0.kind != F_NONE { return "", f0; }
+    let f1 = read_detail(doc, id, opts, lim, buf, d);
+    if f1.kind != F_NONE { return "", f1; }
+    return nm, no_fault();
+}
+
+// read_original_account reads the IBAN of an account of a mandate
+// amendment. An account with no IBAN gives an empty text.
+fn read_original_account(doc: xml::Doc&, id: i32, tag: const u8[:], opts: PainOptions&, lim: Limits&,
+                         buf: u8[>..]&) -> const u8[:], Fault {
+    let ib = account_iban(doc, id);
+    if ib < 0 { return "", no_fault(); }
+    let iban = text_of(doc, ib, buf);
+    let f = check_iban_text(iban, tag, opts, lim);
+    if f.kind != F_NONE { return "", f; }
+    return iban, no_fault();
+}
+
+// read_amendment reads the details of a mandate amendment. A second
+// copy of an element is a fault, so the first never hides a later one.
+fn read_amendment(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
+                  buf: u8[>..]&, a: MandateAmendment&) -> Fault {
+    var sg = single(doc, id, "OrgnlMndtId");
+    if sg.kind == F_NONE { sg = single(doc, id, "OrgnlCdtrSchmeId"); }
+    if sg.kind == F_NONE { sg = single(doc, id, "OrgnlCdtrAgt"); }
+    if sg.kind == F_NONE { sg = single(doc, id, "OrgnlCdtrAgtAcct"); }
+    if sg.kind == F_NONE { sg = single(doc, id, "OrgnlDbtr"); }
+    if sg.kind == F_NONE { sg = single(doc, id, "OrgnlDbtrAcct"); }
+    if sg.kind == F_NONE { sg = single(doc, id, "OrgnlDbtrAgt"); }
+    if sg.kind == F_NONE { sg = single(doc, id, "OrgnlDbtrAgtAcct"); }
+    if sg.kind == F_NONE { sg = single(doc, id, "OrgnlFnlColltnDt"); }
+    if sg.kind != F_NONE { return sg; }
+    let mid, f0 = opt_text(doc, child(doc, id, "OrgnlMndtId"), "OrgnlMndtId", MAX_35, opts, lim, buf);
+    if f0.kind != F_NONE { return f0; }
+    a.mandate_id = mid;
+    let cs = child(doc, id, "OrgnlCdtrSchmeId");
+    if cs >= 0 {
+        let nm, f1 = read_original_party(doc, cs, opts, lim, buf, a.creditor_detail);
+        if f1.kind != F_NONE { return f1; }
+        a.creditor_name = nm;
+    }
+    let ca = child(doc, id, "OrgnlCdtrAgt");
+    if ca >= 0 {
+        let ag, f2 = read_original_agent(doc, ca, "OrgnlCdtrAgt", opts, lim, buf);
+        if f2.kind != F_NONE { return f2; }
+        a.creditor_agent = ag;
+    }
+    let cac = child(doc, id, "OrgnlCdtrAgtAcct");
+    if cac >= 0 {
+        let ib, f3 = read_original_account(doc, cac, "OrgnlCdtrAgtAcct", opts, lim, buf);
+        if f3.kind != F_NONE { return f3; }
+        a.creditor_agent_iban = ib;
+    }
+    let db = child(doc, id, "OrgnlDbtr");
+    if db >= 0 {
+        let nm, f4 = read_original_party(doc, db, opts, lim, buf, a.debtor_detail);
+        if f4.kind != F_NONE { return f4; }
+        a.debtor_name = nm;
+    }
+    let dac = child(doc, id, "OrgnlDbtrAcct");
+    if dac >= 0 {
+        let ib, f5 = read_original_account(doc, dac, "OrgnlDbtrAcct", opts, lim, buf);
+        if f5.kind != F_NONE { return f5; }
+        a.debtor_iban = ib;
+    }
+    let da = child(doc, id, "OrgnlDbtrAgt");
+    if da >= 0 {
+        let ag, f6 = read_original_agent(doc, da, "OrgnlDbtrAgt", opts, lim, buf);
+        if f6.kind != F_NONE { return f6; }
+        a.debtor_agent = ag;
+    }
+    let dag = child(doc, id, "OrgnlDbtrAgtAcct");
+    if dag >= 0 {
+        let ib, f7 = read_original_account(doc, dag, "OrgnlDbtrAgtAcct", opts, lim, buf);
+        if f7.kind != F_NONE { return f7; }
+        a.debtor_agent_iban = ib;
+    }
+    let fd = child(doc, id, "OrgnlFnlColltnDt");
+    if fd >= 0 {
+        let y, m, d, f8 = parse_date(text_of(doc, fd, buf), "OrgnlFnlColltnDt");
+        if f8.kind != F_NONE { return f8; }
+        a.final_year = y; a.final_month = m; a.final_day = d; a.has_final_date = true;
+    }
+    return no_fault();
+}
+
 // parse_debit_block reads one payment block.
 fn parse_debit_block(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
                      blocks: DebitInfo[>..]&, cur: i64, items: DirectDebit[>..]&,
@@ -252,6 +368,20 @@ fn parse_debit(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
                 items[at].has_amendment = true;
                 items[at].amendment = v;
             }
+            var sg = single(doc, mi, "AmdmntInfDtls");
+            if sg.kind == F_NONE { sg = single(doc, mi, "ElctrncSgntr"); }
+            if sg.kind != F_NONE { return sg; }
+            let ad = child(doc, mi, "AmdmntInfDtls");
+            if ad >= 0 {
+                let af = read_amendment(doc, ad, opts, lim, buf, items[at].amendment_details);
+                if af.kind != F_NONE { return af; }
+                if !amendment_empty(items[at].amendment_details) && !(items[at].has_amendment && items[at].amendment) {
+                    return fault(F_SYNTAX, 0, 0, "AmdmntInfDtls", "the amendment details need the amendment indicator set to true");
+                }
+            }
+            let es, ef = opt_text(doc, child(doc, mi, "ElctrncSgntr"), "ElctrncSgntr", 1025, opts, lim, buf);
+            if ef.kind != F_NONE { return ef; }
+            items[at].electronic_signature = es;
         }
         var sg = single(doc, tx, "PreNtfctnId");
         if sg.kind == F_NONE { sg = single(doc, tx, "PreNtfctnDt"); }

@@ -145,6 +145,79 @@ fn write_debit_block(out: u8[>..]&, blk: DebitInfo&, items: DirectDebit[>..]&,
     return no_fault();
 }
 
+// write_original_agent writes an agent of a mandate amendment. The
+// agent holds a BIC or the marker of the scheme.
+fn write_original_agent(out: u8[>..]&, tag: const u8[:], a: OriginalAgent&, depth: i64,
+                        opts: PainWriteOptions, lim: Limits&) -> Fault {
+    if !a.present { return no_fault(); }
+    if a.bic.len > 0 && a.other_id.len > 0 {
+        return fault(F_SYNTAX, 0, 0, tag, "the agent holds a BIC and an other identifier");
+    }
+    if a.other_id.len == 0 { return agent(out, tag, a.bic, depth, opts, lim); }
+    open(out, tag, depth, opts);
+    open(out, "FinInstnId", depth + 1, opts);
+    open(out, "Othr", depth + 2, opts);
+    let f = text_leaf(out, "Id", a.other_id, 35, true, depth + 3, opts, lim);
+    if f.kind != F_NONE { return f; }
+    close(out, "Othr", depth + 2, opts);
+    close(out, "FinInstnId", depth + 1, opts);
+    close(out, tag, depth, opts);
+    return no_fault();
+}
+
+// write_original_party writes a party of a mandate amendment. The
+// name is optional here, because a scheme id changes with no name.
+fn write_original_party(out: u8[>..]&, tag: const u8[:], name: const u8[:], d: PartyDetail&,
+                        depth: i64, opts: PainWriteOptions, lim: Limits&) -> Fault {
+    if name.len == 0 && detail_empty(d) { return no_fault(); }
+    open(out, tag, depth, opts);
+    var f = opt_leaf(out, "Nm", name, MAX_70, depth + 1, opts, lim);
+    if f.kind != F_NONE { return f; }
+    f = write_address(out, d.address, depth + 1, opts, lim);
+    if f.kind != F_NONE { return f; }
+    f = write_party_id(out, d.id, depth + 1, opts, lim);
+    if f.kind != F_NONE { return f; }
+    close(out, tag, depth, opts);
+    return no_fault();
+}
+
+// write_original_account writes an account of a mandate amendment. An
+// empty IBAN writes nothing.
+fn write_original_account(out: u8[>..]&, tag: const u8[:], iban: const u8[:], depth: i64,
+                          opts: PainWriteOptions, lim: Limits&) -> Fault {
+    if iban.len == 0 { return no_fault(); }
+    return account(out, tag, iban, depth, opts, lim);
+}
+
+// write_amendment writes the details of a mandate amendment in the
+// order of the schema.
+fn write_amendment(out: u8[>..]&, a: MandateAmendment&, depth: i64, opts: PainWriteOptions,
+                   lim: Limits&) -> Fault {
+    open(out, "AmdmntInfDtls", depth, opts);
+    var f = opt_leaf(out, "OrgnlMndtId", a.mandate_id, 35, depth + 1, opts, lim);
+    if f.kind != F_NONE { return f; }
+    f = write_original_party(out, "OrgnlCdtrSchmeId", a.creditor_name, a.creditor_detail, depth + 1, opts, lim);
+    if f.kind != F_NONE { return f; }
+    f = write_original_agent(out, "OrgnlCdtrAgt", a.creditor_agent, depth + 1, opts, lim);
+    if f.kind != F_NONE { return f; }
+    f = write_original_account(out, "OrgnlCdtrAgtAcct", a.creditor_agent_iban, depth + 1, opts, lim);
+    if f.kind != F_NONE { return f; }
+    f = write_original_party(out, "OrgnlDbtr", a.debtor_name, a.debtor_detail, depth + 1, opts, lim);
+    if f.kind != F_NONE { return f; }
+    f = write_original_account(out, "OrgnlDbtrAcct", a.debtor_iban, depth + 1, opts, lim);
+    if f.kind != F_NONE { return f; }
+    f = write_original_agent(out, "OrgnlDbtrAgt", a.debtor_agent, depth + 1, opts, lim);
+    if f.kind != F_NONE { return f; }
+    f = write_original_account(out, "OrgnlDbtrAgtAcct", a.debtor_agent_iban, depth + 1, opts, lim);
+    if f.kind != F_NONE { return f; }
+    if a.has_final_date {
+        f = date_leaf(out, "OrgnlFnlColltnDt", a.final_year, a.final_month, a.final_day, depth + 1, opts);
+        if f.kind != F_NONE { return f; }
+    }
+    close(out, "AmdmntInfDtls", depth, opts);
+    return no_fault();
+}
+
 // write_debit writes one collection.
 fn write_debit(out: u8[>..]&, t: DirectDebit&, opts: PainWriteOptions, lim: Limits&) -> Fault {
     if !t.has_signature_date { return fault(F_DATE, 0, 0, "DtOfSgntr", "the mandate signature date is missing or not valid"); }
@@ -164,6 +237,15 @@ fn write_debit(out: u8[>..]&, t: DirectDebit&, opts: PainWriteOptions, lim: Limi
     if t.has_amendment {
         flag_leaf(out, "AmdmntInd", t.amendment, 6, opts);
     }
+    if !amendment_empty(t.amendment_details) {
+        if !t.has_amendment || !t.amendment {
+            return fault(F_SYNTAX, 0, 0, "AmdmntInfDtls", "the amendment details need the amendment flag set to true");
+        }
+        f = write_amendment(out, t.amendment_details, 6, opts, lim);
+        if f.kind != F_NONE { return f; }
+    }
+    f = opt_leaf(out, "ElctrncSgntr", t.electronic_signature, 1025, 6, opts, lim);
+    if f.kind != F_NONE { return f; }
     close(out, "MndtRltdInf", 5, opts);
     f = opt_leaf(out, "PreNtfctnId", t.pre_notification_id, MAX_35, 5, opts, lim);
     if f.kind != F_NONE { return f; }
