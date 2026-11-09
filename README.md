@@ -23,7 +23,7 @@ Every parse is one linear pass with no recursion. Every size has a limit.
 Add these lines to the root file of the program that uses it:
 
 ```goose
-import payment_file from "rekanalar/goose-payment-file@v0.8.0";
+import payment_file from "rekanalar/goose-payment-file@v0.9.0";
 import xml from "rekanalar/goose-xml@v2.0.0";
 import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
@@ -337,7 +337,12 @@ sum, so the reader checks the count only.
   release refuses it. The addenda indicator of an ADV entry is 0.
 - **The ADV writer writes one batch kind per file.** The ADV writer
   holds ADV batches only. The normal writer holds the other batches.
-  A file with both kinds comes from the reader alone.
+  The normal reader refuses an advice batch. The advice reader refuses
+  a normal batch.
+- **The advice routing numbers hold digits now.** The old form let an
+  advice routing number hold fewer than nine digits. It is a fault
+  now. The old form let a total of twenty digits wrap around. It is a
+  fault now. Re-write such a file with this package.
 - **The CIE layout changed.** The old form held the identification
   number first, in columns 40 to 54. The new form holds the name first,
   with 15 characters. A file in the old form
@@ -350,7 +355,8 @@ sum, so the reader checks the count only.
   legal before. It is now a fault for twelve SEC codes.
 - **The IAT writer writes one batch kind per file.** The IAT writer
   holds IAT batches only. The normal writer holds the other batches.
-  A file with both kinds comes from the reader alone.
+  The normal reader refuses an IAT batch. The IAT reader takes a file
+  of both kinds.
 - **A code sets the return form.** An old file can
   hold such a code in the plain layout. The reader reads it as the
   other form. Re-write that file with this package.
@@ -451,11 +457,19 @@ NACHA protections beyond the reference library `moov-io/ach`:
 - **An advice batch holds an entry.** The reader refuses a batch
   without one. The writer refuses it too.
 - **The advice fields are checked.** An advice entry holds no blank
-  account. It holds no blank advice routing number. It holds no blank
-  file identification. It holds no blank operator routing number. It
-  holds no blank name. The reader holds the same rules as the writer.
+  account. It holds no blank file identification. It holds no blank
+  name. The reader holds the same rules as the writer.
 - **The service class 280 goes with the SEC code ADV.** One without
   the other is a fault.
+- **The two advice routing numbers hold digits.** The advice routing
+  number holds nine digits. The operator routing number holds eight
+  digits. The reference library takes any text in these two fields.
+  It fills a short advice routing number with zeros. This package
+  refuses a short one.
+- **Every numeric field checks its digits.** A number that does not
+  fit an i64 is a fault. The reader and the writer of every message
+  share one guard for it. The twenty digit totals of an advice file
+  need it too.
 - **The plain return refuses the codes of the two forms.** A plain
   record with such a code is a fault. The reader would read the file
   as the other form, so the writer refuses it first.

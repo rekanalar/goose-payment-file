@@ -279,7 +279,8 @@ fn write_iat_batch_header(out: u8[>..]&, b: IatBatch) -> Fault {
 // originator identification stands where the company id stands in the
 // control of a normal batch.
 fn write_iat_batch_control(out: u8[>..]&, b: IatBatch, entries: IatEntry[>..]&) -> Fault {
-    let count, hash, debit, credit = batch_totals(b, entries);
+    let count, hash, debit, credit, tf = batch_totals(b, entries, 0);
+    if tf.kind != F_NONE { return tf; }
     out.push('8');
     let f = put_num(out, b.service_class, 3, "8");
     if f.kind != F_NONE { return f; }

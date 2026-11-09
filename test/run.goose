@@ -799,6 +799,7 @@ fn main() {
     test_adv_round_trip();
     test_adv_columns();
     test_adv_refusals();
+    test_adv_policy();
     test_sec_refusals();
     test_sec_bad_return_codes();
     test_sec_mixed();
@@ -3142,7 +3143,7 @@ fn adv_build(code2: i64, name: const u8[:], out: u8[>..]&) -> i32 {
 
 // adv_build_mode breaks one rule of the batch: 1 blank account, 2 Julian
 // day 0, 3 sequence 0, 4 equal sequence numbers, 5 service class 200,
-// 6 originator status 1.
+// 6 originator status 1, 7 a second batch whose entry range wraps an i32.
 fn adv_build_mode(code2: i64, name: const u8[:], mode: i64, out: u8[>..]&) -> i32 {
     var entries: payment_file::AdvEntry[>..] = [];
     var e = payment_file::new_adv_entry();
@@ -3184,6 +3185,14 @@ fn adv_build_mode(code2: i64, name: const u8[:], mode: i64, out: u8[>..]&) -> i3
     b.entry_start = 0;
     b.entry_count = 2;
     batches.push(b);
+    if mode == 7 {
+        batches[0].entry_count = 1;
+        var b2 = b;
+        b2.batch_number = 2;
+        b2.entry_start = 1;
+        b2.entry_count = 2147483647;
+        batches.push(b2);
+    }
     var h = payment_file::new_ach_file_header();
     h.destination_routing = "121140399";
     h.origin_id = "1234567890";
@@ -3246,6 +3255,35 @@ fn test_adv_columns() {
     assert(out[f + 71] == ' ' && out[f + 93] == ' ');
 }
 
+fn test_adv_policy() {
+    // The normal writer refuses an advice batch.
+    var out: u8[>..] = [];
+    assert(sec_build("ADV", 27, 100, 280, "", "123", "Receiver", "NY", 0, 0, out)
+           == payment_file::F_SYNTAX);
+    assert(out.len == 0);
+    // The normal reader refuses an advice batch.
+    var out2: u8[>..] = [];
+    assert(adv_build(84, "Receiver", out2) == payment_file::F_NONE);
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(out2, bs, es, ads) != payment_file::F_NONE);
+    // The advice routing number holds nine digits. The operator
+    // routing number holds eight digits. A byte that is no digit in
+    // either field is a fault.
+    let spots: i64[>..] = [39, 86];
+    var si: i64 = 0;
+    while si < spots.len {
+        var out3: u8[>..] = [];
+        assert(adv_build(84, "Receiver", out3) == payment_file::F_NONE);
+        let r3 = find(out3, "\n6") + 1;
+        out3[r3 + spots[si]] = 'A';
+        var es3: payment_file::AdvEntry[>..] = [];
+        assert(adv_parse(out3, es3) == payment_file::F_SYNTAX);
+        si += 1;
+    }
+}
+
 fn test_adv_refusals() {
     var out: u8[>..] = [];
     assert(adv_build(40, "Receiver", out) == payment_file::F_SYNTAX);
@@ -3256,6 +3294,7 @@ fn test_adv_refusals() {
     assert(adv_build_mode(84, "Receiver", 4, out) == payment_file::F_TOTAL);
     assert(adv_build_mode(84, "Receiver", 5, out) == payment_file::F_SYNTAX);
     assert(adv_build_mode(84, "Receiver", 6, out) == payment_file::F_SYNTAX);
+    assert(adv_build_mode(84, "Receiver", 7, out) == payment_file::F_LIMIT);
     assert(out.len == 0);
     // A flipped byte of the debit total is a fault.
     assert(adv_build(84, "Receiver", out) == payment_file::F_NONE);

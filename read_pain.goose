@@ -55,7 +55,7 @@ fn digits_value(text: const u8[:]) -> i64, bool {
         let c = text[i];
         if c < '0' || c > '9' { return 0, false; }
         let d = (c - '0') as i64;
-        if v > 922337203685477580 || (v == 922337203685477580 && d > 7) { return 0, false; }
+        if !digit_fits(v, d) { return 0, false; }
         v = v * 10 + d;
         i += 1;
     }
@@ -103,7 +103,7 @@ fn parse_amount(text: const u8[:], ccy: const u8[:], tag: const u8[:]) -> i64, F
     i = 0;
     while i < digits.len {
         let d = (digits[i] - '0') as i64;
-        if v > 922337203685477580 || (v == 922337203685477580 && d > 7) {
+        if !digit_fits(v, d) {
             return z, fault(F_OVERFLOW, 0, 0, tag, "the amount does not fit in 64 bits");
         }
         v = v * 10 + d;

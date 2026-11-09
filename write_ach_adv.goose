@@ -10,6 +10,7 @@ import std;
 import fault;
 import model_ach;
 import model_ach_adv;
+import write_ach;
 
 // adv_code_ok tells whether the code is a transaction code of the
 // advice set.
@@ -21,17 +22,6 @@ fn adv_code_ok(code: i64) -> bool {
 // account.
 fn adv_debit_code(code: i64) -> bool {
     return code == 82 || code == 84 || code == 86 || code == 88;
-}
-
-// put_zeros writes a text zero filled to a width. A text longer than
-// the width is a fault.
-fn put_zeros(out: u8[>..]&, text: const u8[:], width: i64, tag: const u8[:]) -> Fault {
-    let f = check_ach_text(text, width, tag);
-    if f.kind != F_NONE { return f; }
-    var p = width - text.len;
-    while p > 0 { out.push('0'); p -= 1; }
-    put(out, text);
-    return no_fault();
 }
 
 // check_adv_entry checks one advice entry before any byte goes out.
@@ -50,11 +40,9 @@ fn check_adv_entry(e: AdvEntry) -> Fault {
     if e.amount < 0 {
         return fault(F_AMOUNT, 0, 0, "6", "the amount is below zero");
     }
-    if e.advice_routing_number.len == 0 {
-        return fault(F_SYNTAX, 0, 0, "6", "the advice routing number is blank");
+    if !digits_width(e.advice_routing_number, 9) {
+        return fault(F_SYNTAX, 0, 0, "6", "the advice routing number is not 9 digits");
     }
-    let f2 = check_ach_text(e.advice_routing_number, 9, "6");
-    if f2.kind != F_NONE { return f2; }
     if e.file_identification.len == 0 {
         return fault(F_SYNTAX, 0, 0, "6", "the file identification is blank");
     }
@@ -72,11 +60,9 @@ fn check_adv_entry(e: AdvEntry) -> Fault {
     if e.addenda_indicator != 0 {
         return fault(F_LIMIT, 0, 0, "6", "an advice entry carries no addenda record");
     }
-    if e.ach_operator_routing_number.len == 0 {
-        return fault(F_SYNTAX, 0, 0, "6", "the operator routing number is blank");
+    if !digits_width(e.ach_operator_routing_number, 8) {
+        return fault(F_SYNTAX, 0, 0, "6", "the operator routing number is not 8 digits");
     }
-    let f7 = check_ach_text(e.ach_operator_routing_number, 8, "6");
-    if f7.kind != F_NONE { return f7; }
     if e.julian_day < 1 || e.julian_day > 366 {
         return fault(F_DATE, 0, 0, "6", "the Julian day is not between 1 and 366");
     }
@@ -87,7 +73,7 @@ fn check_adv_entry(e: AdvEntry) -> Fault {
 }
 
 // write_adv_entry writes record 6 of an advice batch. The columns
-// mirror the reader in read_ach.goose.
+// mirror the reader in read_ach_adv.goose.
 fn write_adv_entry(out: u8[>..]&, e: AdvEntry) -> Fault {
     if e.rdfi_routing.len != 9 {
         return fault(F_SYNTAX, 0, 0, "6", "the routing number is not 9 digits");
@@ -100,7 +86,7 @@ fn write_adv_entry(out: u8[>..]&, e: AdvEntry) -> Fault {
     if f2.kind != F_NONE { return f2; }
     let f3 = put_num(out, e.amount, 12, "6");
     if f3.kind != F_NONE { return f3; }
-    let f4 = put_zeros(out, e.advice_routing_number, 9, "6");
+    let f4 = put_text(out, e.advice_routing_number, 9, "6");
     if f4.kind != F_NONE { return f4; }
     let f5 = put_text(out, e.file_identification, 5, "6");
     if f5.kind != F_NONE { return f5; }
@@ -120,7 +106,7 @@ fn write_adv_entry(out: u8[>..]&, e: AdvEntry) -> Fault {
 
 // adv_totals gives the count, the hash, the debit total and the
 // credit total of the advice entries of a batch.
-fn adv_totals(b: AchBatch, entries: AdvEntry[>..]&) -> i64, i64, i64, i64, Fault {
+fn adv_totals(b: AchBatch, entries: AdvEntry[>..]&, line: i64) -> i64, i64, i64, i64, Fault {
     var count: i64 = 0;
     var hash: i64 = 0;
     var debit: i64 = 0;
@@ -129,18 +115,12 @@ fn adv_totals(b: AchBatch, entries: AdvEntry[>..]&) -> i64, i64, i64, i64, Fault
     while i < b.entry_start + b.entry_count {
         let e = entries[i];
         count += 1;
-        let h, ok = checked_add(hash, hash_prefix(e.rdfi_routing));
-        if !ok { return 0, 0, 0, 0, fault(F_OVERFLOW, 0, 0, "8", "the entry hash does not fit"); }
-        hash = h % 10000000000;
-        if adv_debit_code(e.transaction_code) {
-            let d, ok2 = checked_add(debit, e.amount);
-            if !ok2 { return 0, 0, 0, 0, fault(F_OVERFLOW, 0, 0, "8", "the debit total does not fit"); }
-            debit = d;
-        } else {
-            let c, ok3 = checked_add(credit, e.amount);
-            if !ok3 { return 0, 0, 0, 0, fault(F_OVERFLOW, 0, 0, "8", "the credit total does not fit"); }
-            credit = c;
-        }
+        let h, d, c, tf = fold_totals(hash, debit, credit, e.rdfi_routing, e.amount,
+                                      adv_debit_code(e.transaction_code), line);
+        if tf.kind != F_NONE { return 0, 0, 0, 0, tf; }
+        hash = h;
+        debit = d;
+        credit = c;
         i += 1;
     }
     return count, hash, debit, credit, no_fault();
@@ -190,12 +170,17 @@ fn write_adv_file_control(out: u8[>..]&, batch_count: i64, total_count: i64,
     return no_fault();
 }
 
-// check_adv_batch checks the rule of an advice batch that the shared
-// batch header does not hold. The other rules stand in
-// write_ach_batch_header.
-fn check_adv_batch(b: AchBatch) -> Fault {
+// check_adv_batch checks the rules of an advice batch header. The
+// rules of the other kinds of batch stand in their own functions.
+fn check_adv_batch(b: AchBatch, line: i64) -> Fault {
+    if b.service_class != 280 {
+        return fault(F_SYNTAX, line, 2, "5", "an advice batch holds the service class 280 only");
+    }
+    if b.sec_code != "ADV" {
+        return fault(F_SYNTAX, line, 51, "5", "an advice batch holds the SEC code ADV only");
+    }
     if b.originator_status != 0 {
-        return fault(F_SYNTAX, 0, 0, "5", "an advice batch holds the originator status 0 only");
+        return fault(F_SYNTAX, line, 79, "5", "an advice batch holds the originator status 0 only");
     }
     return no_fault();
 }
@@ -222,7 +207,7 @@ fn write_ach_adv(h: AchFileHeader, batches: AchBatch[>..]&, entries: AdvEntry[>.
     var rq: i64 = 0;
     while rq < batches.len {
         let rb = batches[rq];
-        records += 2 + rb.entry_count;
+        records += 2 + rb.entry_count as i64;
         rq += 1;
     }
     records += 1;
@@ -241,7 +226,7 @@ fn write_ach_adv(h: AchFileHeader, batches: AchBatch[>..]&, entries: AdvEntry[>.
     while q < batches.len {
         let b = batches[q];
         if b.entry_start < 0 || b.entry_count < 0
-           || b.entry_start + b.entry_count > entries.len {
+           || b.entry_start as i64 + b.entry_count as i64 > entries.len {
             return fault(F_LIMIT, 0, 0, "5", "the entry range of the batch reaches past the entries");
         }
         if b.entry_count == 0 {
@@ -250,7 +235,7 @@ fn write_ach_adv(h: AchFileHeader, batches: AchBatch[>..]&, entries: AdvEntry[>.
         if b.entry_start != next {
             return fault(F_LIMIT, 0, 0, "5", "the entry ranges of the batches do not follow each other");
         }
-        let bf = check_adv_batch(b);
+        let bf = check_adv_batch(b, 0);
         if bf.kind != F_NONE { return bf; }
         let bhf = write_ach_batch_header(body, b);
         if bhf.kind != F_NONE { return bhf; }
@@ -270,8 +255,8 @@ fn write_ach_adv(h: AchFileHeader, batches: AchBatch[>..]&, entries: AdvEntry[>.
             put_rec(body);
             i += 1;
         }
-        next = b.entry_start + b.entry_count;
-        let count, hash, debit, credit, tf = adv_totals(b, entries);
+        next = b.entry_start as i64 + b.entry_count as i64;
+        let count, hash, debit, credit, tf = adv_totals(b, entries, 0);
         if tf.kind != F_NONE { return tf; }
         let c, ok1 = checked_add(total_count, count);
         if !ok1 { return fault(F_OVERFLOW, 0, 0, "9", "the entry count does not fit"); }

@@ -61,20 +61,11 @@ fn tail_spaces(rec: const u8[:], from: i64, to: i64, line: i64, tag: const u8[:]
     return no_fault();
 }
 
-// num_fld reads a numeric field. Anything but digits is a fault.
+// num_fld reads a numeric field. Every numeric field of the package
+// goes through it.
 fn num_fld(rec: const u8[:], from: i64, to: i64, line: i64, tag: const u8[:]) -> i64, Fault {
-    let s = fld(rec, from, to);
-    var v: i64 = 0;
-    var i: i64 = 0;
-    while i < s.len {
-        let c = s[i];
-        if c < '0' || c > '9' {
-            return 0, fault(F_SYNTAX, line, from + i, tag, "the numeric field holds no digit");
-        }
-        v = v * 10 + (c - '0') as i64;
-        i += 1;
-    }
-    return v, no_fault();
+    return num_digits(fld(rec, from, to), line, tag, from,
+                      "the numeric field holds no digit");
 }
 
 // txt_fld reads a text field, trims the spaces on the right and
@@ -101,19 +92,9 @@ fn date_fld(rec: const u8[:], from: i64, line: i64, tag: const u8[:]) -> i32, i3
 }
 
 // num_text reads a number from a text. Anything but digits is a
-// fault.
+// fault. A number that does not fit an i64 is a fault too.
 fn num_text(text: const u8[:]) -> i64, Fault {
-    var v: i64 = 0;
-    var i: i64 = 0;
-    while i < text.len {
-        let c = text[i];
-        if c < '0' || c > '9' {
-            return 0, fault(F_SYNTAX, 0, i + 1, "6", "the trace number tail holds no digit");
-        }
-        v = v * 10 + (c - '0') as i64;
-        i += 1;
-    }
-    return v, no_fault();
+    return num_digits(text, 0, "6", 1, "the trace number tail holds no digit");
 }
 
 // parse_ach_file_header reads record 1.
@@ -161,9 +142,6 @@ fn parse_ach_file_header(rec: const u8[:], line: i64, h: AchFileHeader&) -> Faul
 fn parse_ach_batch_header(rec: const u8[:], line: i64, b: AchBatch&) -> Fault {
     let sc, f0 = num_fld(rec, 2, 4, line, "5");
     if f0.kind != F_NONE { return f0; }
-    if !service_class_ok(sc) && sc != 280 {
-        return fault(F_SYNTAX, line, 2, "5", "the service class is not 200, 220, 225 or 280");
-    }
     b.service_class = sc;
     let cn, f1 = txt_fld(rec, 5, 20, line, "5");
     if f1.kind != F_NONE { return f1; }
@@ -175,12 +153,6 @@ fn parse_ach_batch_header(rec: const u8[:], line: i64, b: AchBatch&) -> Fault {
     if f3.kind != F_NONE { return f3; }
     b.company_id = ci;
     let sec = fld(rec, 51, 53);
-    if !sec_ok(sec) && sec != "ADV" {
-        return fault(F_SYNTAX, line, 51, "5", "the SEC code is not one of the codes of the package");
-    }
-    if (sc == 280) != (sec == "ADV") {
-        return fault(F_SYNTAX, line, 2, "5", "the service class 280 and the SEC code ADV go together");
-    }
     b.sec_code = sec;
     let de, f4 = txt_fld(rec, 54, 63, line, "5");
     if f4.kind != F_NONE { return f4; }
@@ -195,9 +167,6 @@ fn parse_ach_batch_header(rec: const u8[:], line: i64, b: AchBatch&) -> Fault {
     b.effective_day = d;
     let os, f7 = num_fld(rec, 79, 79, line, "5");
     if f7.kind != F_NONE { return f7; }
-    if os > 2 {
-        return fault(F_SYNTAX, line, 79, "5", "the originator status is not 0, 1 or 2");
-    }
     b.originator_status = os;
     let odfi = fld(rec, 80, 87);
     if !ascii_ok(odfi) {
@@ -279,13 +248,6 @@ fn parse_ach_addenda(rec: const u8[:], line: i64, a: AchAddenda&) -> Fault {
     if f.kind != F_NONE { return f; }
     a.text = t;
     return no_fault();
-}
-
-// digits_width tells whether a text of the given width holds digits
-// only. The reader checks the digit fields of the notice and the
-// return with it.
-fn digits_width(text: const u8[:], width: i64) -> bool {
-    return text.len == width && digits_ok(text);
 }
 
 // parse_iat_batch_header reads record 5 of the SEC code IAT.
@@ -861,7 +823,8 @@ fn iat_close_batch(rec: const u8[:], line: i64, st: IatState&, ie: IatEntry[>..]
     if cbn != st.batch.batch_number {
         return 0, 0, 0, 0, fault(F_TOTAL, line, 88, "8", "the batch number of the control differs from the header");
     }
-    let count, hash, debit, credit = batch_totals(st.batch, ie);
+    let count, hash, debit, credit, tf0 = batch_totals(st.batch, ie, line);
+    if tf0.kind != F_NONE { return 0, 0, 0, 0, tf0; }
     let ccn, c4 = num_fld(rec, 5, 10, line, "8");
     if c4.kind != F_NONE { return 0, 0, 0, 0, c4; }
     let chc, c5 = num_fld(rec, 11, 20, line, "8");
@@ -1025,9 +988,8 @@ fn parse_ach_iat(input: const u8[:], opts: AchOptions, lim: Limits&, h: AchFileH
             } else {
                 let bf = parse_ach_batch_header(rec, line, batch);
                 if bf.kind != F_NONE { return bf; }
-                if batch.sec_code == "ADV" {
-                    return fault(F_SYNTAX, line, 51, "5", "an advice batch needs parse_ach_adv");
-                }
+                let kf = check_ach_batch(batch, line);
+                if kf.kind != F_NONE { return kf; }
                 batch.entry_start = entries.len as i32;
                 batch.entry_count = 0;
                 iat_mode = false;
@@ -1202,7 +1164,8 @@ fn parse_ach_iat(input: const u8[:], opts: AchOptions, lim: Limits&, h: AchFileH
                 return fault(F_TOTAL, line, 88, "8", "the batch number of the control differs from the header");
             }
             // The computed totals of the batch.
-            let count, hash, debit, credit = batch_totals(batch, entries);
+            let count, hash, debit, credit, tf1 = batch_totals(batch, entries, line);
+            if tf1.kind != F_NONE { return tf1; }
             let ccn, c4 = num_fld(rec, 5, 10, line, "8");
             if c4.kind != F_NONE { return c4; }
             let chc, c5 = num_fld(rec, 11, 20, line, "8");

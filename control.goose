@@ -21,6 +21,35 @@ fn checked_add(a: i64, b: i64) -> i64, bool {
     return a + b, true;
 }
 
+// digit_fits tells whether the number v*10+d fits in an i64. Every
+// numeric reader of the package checks each digit with it.
+fn digit_fits(v: i64, d: i64) -> bool {
+    return v <= (9223372036854775807 - d) / 10;
+}
+
+// num_digits reads a number from a text of digits. Anything but
+// digits is a fault. A value that does not fit an i64 is a fault. The
+// column of the fault is the first column of the text plus the offset
+// of the byte.
+fn num_digits(s: const u8[:], line: i64, tag: const u8[:], from: i64,
+              what: const u8[:]) -> i64, Fault {
+    var v: i64 = 0;
+    var i: i64 = 0;
+    while i < s.len {
+        let c = s[i];
+        if c < '0' || c > '9' {
+            return 0, fault(F_SYNTAX, line, from + i, tag, what);
+        }
+        let d = (c - '0') as i64;
+        if !digit_fits(v, d) {
+            return 0, fault(F_OVERFLOW, line, from + i, tag, "the number does not fit the reader");
+        }
+        v = v * 10 + d;
+        i += 1;
+    }
+    return v, no_fault();
+}
+
 // add_minor adds one amount to a running sum. The schema allows no
 // negative amount, and the sum must fit in an i64.
 fn add_minor(sum: i64, minor: i64) -> i64, Fault {

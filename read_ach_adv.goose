@@ -10,28 +10,7 @@ import std;
 import fault;
 import model_ach;
 import model_ach_adv;
-
-// num_wide_fld reads a numeric field of twenty digits. A value that
-// does not fit an i64 is a fault. The narrow reader wraps such a value
-// without a fault.
-fn num_wide_fld(rec: const u8[:], from: i64, to: i64, line: i64, tag: const u8[:]) -> i64, Fault {
-    let s = fld(rec, from, to);
-    var v: i64 = 0;
-    var i: i64 = 0;
-    while i < s.len {
-        let c = s[i];
-        if c < '0' || c > '9' {
-            return 0, fault(F_SYNTAX, line, from + i, tag, "the numeric field holds no digit");
-        }
-        let d = (c - '0') as i64;
-        if v > (9223372036854775807 - d) / 10 {
-            return 0, fault(F_OVERFLOW, line, from + i, tag, "the number does not fit the reader");
-        }
-        v = v * 10 + d;
-        i += 1;
-    }
-    return v, no_fault();
-}
+import write_ach_adv;
 
 // parse_adv_entry reads record 6 of an advice batch. The columns
 // mirror the writer in write_ach_adv.goose.
@@ -54,9 +33,10 @@ fn parse_adv_entry(rec: const u8[:], line: i64, e: AdvEntry&) -> Fault {
     let am, f2 = num_fld(rec, 28, 39, line, "6");
     if f2.kind != F_NONE { return f2; }
     e.amount = am;
-    let arn, f3 = txt_fld(rec, 40, 48, line, "6");
-    if f3.kind != F_NONE { return f3; }
-    if arn.len == 0 { return fault(F_SYNTAX, line, 40, "6", "the advice routing number is blank"); }
+    let arn = fld(rec, 40, 48);
+    if !digits_width(arn, 9) {
+        return fault(F_SYNTAX, line, 40, "6", "the advice routing number is not 9 digits");
+    }
     e.advice_routing_number = arn;
     let fi, f4 = txt_fld(rec, 49, 53, line, "6");
     if f4.kind != F_NONE { return f4; }
@@ -78,9 +58,10 @@ fn parse_adv_entry(rec: const u8[:], line: i64, e: AdvEntry&) -> Fault {
         return fault(F_LIMIT, line, 79, "6", "an advice entry carries no addenda record");
     }
     e.addenda_indicator = 0;
-    let orr, f9 = txt_fld(rec, 80, 87, line, "6");
-    if f9.kind != F_NONE { return f9; }
-    if orr.len == 0 { return fault(F_SYNTAX, line, 80, "6", "the operator routing number is blank"); }
+    let orr = fld(rec, 80, 87);
+    if !digits_width(orr, 8) {
+        return fault(F_SYNTAX, line, 80, "6", "the operator routing number is not 8 digits");
+    }
     e.ach_operator_routing_number = orr;
     let jd, f10 = num_fld(rec, 88, 90, line, "6");
     if f10.kind != F_NONE { return f10; }
@@ -164,12 +145,8 @@ fn parse_ach_adv(input: const u8[:], opts: AchOptions, lim: Limits&, h: AchFileH
             }
             let bf = parse_ach_batch_header(rec, line, batch);
             if bf.kind != F_NONE { return bf; }
-            if batch.sec_code != "ADV" {
-                return fault(F_SYNTAX, line, 51, "5", "an advice file holds the SEC code ADV only");
-            }
-            if batch.originator_status != 0 {
-                return fault(F_SYNTAX, line, 79, "5", "an advice batch holds the originator status 0 only");
-            }
+            let kf = check_adv_batch(batch, line);
+            if kf.kind != F_NONE { return kf; }
             batch.entry_start = entries.len as i32;
             batch.entry_count = 0;
             open = true;
@@ -220,11 +197,11 @@ fn parse_ach_adv(input: const u8[:], opts: AchOptions, lim: Limits&, h: AchFileH
             if g1.kind != F_NONE { return g1; }
             let hsh, g2 = num_fld(rec, 11, 20, line, "8");
             if g2.kind != F_NONE { return g2; }
-            let db, g3 = num_wide_fld(rec, 21, 40, line, "8");
+            let db, g3 = num_fld(rec, 21, 40, line, "8");
             if g3.kind != F_NONE { return g3; }
-            let cr, g4 = num_wide_fld(rec, 41, 60, line, "8");
+            let cr, g4 = num_fld(rec, 41, 60, line, "8");
             if g4.kind != F_NONE { return g4; }
-            let count, hash, debit, credit, tf = adv_totals(batch, entries);
+            let count, hash, debit, credit, tf = adv_totals(batch, entries, line);
             if tf.kind != F_NONE { return tf; }
             if !opts.skip_total_check {
                 if cnt != count {
@@ -267,9 +244,9 @@ fn parse_ach_adv(input: const u8[:], opts: AchOptions, lim: Limits&, h: AchFileH
             if g2.kind != F_NONE { return g2; }
             let fha, g3 = num_fld(rec, 22, 31, line, "9");
             if g3.kind != F_NONE { return g3; }
-            let fdb, g4 = num_wide_fld(rec, 32, 51, line, "9");
+            let fdb, g4 = num_fld(rec, 32, 51, line, "9");
             if g4.kind != F_NONE { return g4; }
-            let fcr, g5 = num_wide_fld(rec, 52, 71, line, "9");
+            let fcr, g5 = num_fld(rec, 52, 71, line, "9");
             if g5.kind != F_NONE { return g5; }
             // A normal file control holds spaces from column 56, so the
             // twenty digit totals above refuse it. The tail after the

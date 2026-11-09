@@ -143,6 +143,12 @@ fn digits_ok(text: const u8[:]) -> bool {
     return true;
 }
 
+// digits_width tells whether a text of the given width holds digits
+// only. The reader and the writer check the digit fields with it.
+fn digits_width(text: const u8[:], width: i64) -> bool {
+    return text.len == width && digits_ok(text);
+}
+
 // check_ach_text checks one text against the printable ASCII set and
 // a width. The writer never truncates.
 fn check_ach_text(text: const u8[:], width: i64, tag: const u8[:]) -> Fault {
@@ -594,21 +600,27 @@ fn write_ach_file_header(out: u8[>..]&, h: AchFileHeader) -> Fault {
     return put_text(out, h.reference, 8, "1");
 }
 
-// write_ach_batch_header writes record 5.
-fn write_ach_batch_header(out: u8[>..]&, b: AchBatch) -> Fault {
-    // The service class 280 belongs to the SEC code ADV and to no other.
-    if !service_class_ok(b.service_class) && b.service_class != 280 {
-        return fault(F_SYNTAX, 0, 0, "5", "the service class is not 200, 220, 225 or 280");
+// check_ach_batch checks the rules of a normal batch header. The
+// rules of the advice batch stand in check_adv_batch. The reader of
+// the normal batches calls this function too.
+fn check_ach_batch(b: AchBatch, line: i64) -> Fault {
+    if !service_class_ok(b.service_class) {
+        return fault(F_SYNTAX, line, 2, "5", "the service class is not 200, 220 or 225");
     }
-    if !sec_ok(b.sec_code) && b.sec_code != "ADV" {
-        return fault(F_SYNTAX, 0, 0, "5", "the SEC code is not one of the codes of the package");
+    if b.sec_code == "ADV" {
+        return fault(F_SYNTAX, line, 51, "5", "the SEC code ADV needs write_ach_adv or parse_ach_adv");
     }
-    if (b.service_class == 280) != (b.sec_code == "ADV") {
-        return fault(F_SYNTAX, 0, 0, "5", "the service class 280 and the SEC code ADV go together");
+    if !sec_ok(b.sec_code) {
+        return fault(F_SYNTAX, line, 51, "5", "the SEC code is not one of the codes of the package");
     }
     if b.originator_status < 0 || b.originator_status > 2 {
-        return fault(F_SYNTAX, 0, 0, "5", "the originator status is not 0, 1 or 2");
+        return fault(F_SYNTAX, line, 79, "5", "the originator status is not 0, 1 or 2");
     }
+    return no_fault();
+}
+
+// write_ach_batch_header writes record 5.
+fn write_ach_batch_header(out: u8[>..]&, b: AchBatch) -> Fault {
     if b.odfi_id.len != 8 || !digits_ok(b.odfi_id) {
         return fault(F_SYNTAX, 0, 0, "5", "the ODFI id is not 8 digits");
     }
@@ -970,6 +982,8 @@ fn write_ach(h: AchFileHeader, batches: AchBatch[>..]&, entries: AchEntry[>..]&,
     var q: i64 = 0;
     while q < batches.len {
         let b = batches[q];
+        let kf = check_ach_batch(b, 0);
+        if kf.kind != F_NONE { return kf; }
         let bf = batch_entry_bounds(b, entries, addenda);
         if bf.kind != F_NONE { return bf; }
         if b.entry_count == 0 {
@@ -1047,9 +1061,6 @@ fn write_ach(h: AchFileHeader, batches: AchBatch[>..]&, entries: AchEntry[>..]&,
     q = 0;
     while q < batches.len {
         let b = batches[q];
-        if b.sec_code == "ADV" {
-            return fault(F_SYNTAX, 0, 0, "5", "an advice batch needs write_ach_adv");
-        }
         let bf = write_ach_batch_header(body, b);
         if bf.kind != F_NONE { return bf; }
         put_rec(body);
@@ -1085,10 +1096,28 @@ fn write_ach(h: AchFileHeader, batches: AchBatch[>..]&, entries: AchEntry[>..]&,
     return no_fault();
 }
 
+// fold_totals adds one entry to the running totals of a batch. The
+// routing number gives the hash. The amount goes to the debit total
+// or to the credit total. A total that does not fit an i64 is a
+// fault.
+fn fold_totals(hash: i64, debit: i64, credit: i64, routing: const u8[:],
+               amount: i64, is_debit: bool, line: i64) -> i64, i64, i64, Fault {
+    let h, ok = checked_add(hash, hash_prefix(routing));
+    if !ok { return 0, 0, 0, fault(F_OVERFLOW, line, 0, "8", "the entry hash does not fit"); }
+    if is_debit {
+        let d, ok2 = checked_add(debit, amount);
+        if !ok2 { return 0, 0, 0, fault(F_OVERFLOW, line, 0, "8", "the debit total does not fit"); }
+        return h % 10000000000, d, credit, no_fault();
+    }
+    let c, ok3 = checked_add(credit, amount);
+    if !ok3 { return 0, 0, 0, fault(F_OVERFLOW, line, 0, "8", "the credit total does not fit"); }
+    return h % 10000000000, debit, c, no_fault();
+}
+
 // batch_totals gives the computed values of one batch: the count of
 // the entries and the addenda, the hash, the debit total and the
 // credit total. The caller checked the codes and the routing numbers.
-fn batch_totals<B, E>(b: B, entries: E[>..]&) -> i64, i64, i64, i64 {
+fn batch_totals<B, E>(b: B, entries: E[>..]&, line: i64) -> i64, i64, i64, i64, Fault {
     var count: i64 = 0;
     var hash: i64 = 0;
     var debit: i64 = 0;
@@ -1096,24 +1125,24 @@ fn batch_totals<B, E>(b: B, entries: E[>..]&) -> i64, i64, i64, i64 {
     var i = b.entry_start;
     while i < b.entry_start + b.entry_count {
         let e = entries[i];
-        count += 1 + e.addenda_count as i64;
-        let h, ok = checked_add(hash, hash_prefix(e.rdfi_routing));
-        if ok { hash = h % 10000000000; }
-        if ach_debit_code(e.transaction_code) {
-            let d, ok2 = checked_add(debit, e.amount);
-            if ok2 { debit = d; }
-        } else {
-            let c, ok3 = checked_add(credit, e.amount);
-            if ok3 { credit = c; }
-        }
+        let c0, ok0 = checked_add(count, 1 + e.addenda_count as i64);
+        if !ok0 { return 0, 0, 0, 0, fault(F_OVERFLOW, line, 0, "8", "the entry count does not fit"); }
+        count = c0;
+        let h, d, c, tf = fold_totals(hash, debit, credit, e.rdfi_routing, e.amount,
+                                      ach_debit_code(e.transaction_code), line);
+        if tf.kind != F_NONE { return 0, 0, 0, 0, tf; }
+        hash = h;
+        debit = d;
+        credit = c;
         i += 1;
     }
-    return count, hash, debit, credit;
+    return count, hash, debit, credit, no_fault();
 }
 
 // write_ach_batch_control writes record 8 from the computed totals.
 fn write_ach_batch_control(out: u8[>..]&, b: AchBatch, entries: AchEntry[>..]&) -> Fault {
-    let count, hash, debit, credit = batch_totals(b, entries);
+    let count, hash, debit, credit, tf = batch_totals(b, entries, 0);
+    if tf.kind != F_NONE { return tf; }
     out.push('8');
     let f = put_num(out, b.service_class, 3, "8");
     if f.kind != F_NONE { return f; }
