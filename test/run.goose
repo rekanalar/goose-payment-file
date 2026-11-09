@@ -130,8 +130,8 @@ fn test_newer_schema() {
 <p:Document xmlns:p="urn:iso:std:iso:20022:tech:xsd:pain.001.001.08">
 <CstmrCdtTrfInitn><GrpHdr><MsgId>MSG-8</MsgId><CreDtTm>2026-02-03T08:00:00+02:00</CreDtTm>
 <NbOfTxs>1</NbOfTxs><CtrlSum>10.00</CtrlSum><InitgPty><Nm>Initiator SA</Nm></InitgPty></GrpHdr>
-<PmtInf><PmtInfId>P-8</PmtInfId><PmtMtd>TRF</PmtMtd><Dbtr><Nm>Debtor SA</Nm></Dbtr>
-<DbtrAcct><Id><IBAN>ES9121000418450200051332</IBAN></Id></DbtrAcct>
+<PmtInf><PmtInfId>P-8</PmtInfId><PmtMtd>TRF</PmtMtd><ReqdExctnDt>2026-12-01</ReqdExctnDt><Dbtr><Nm>Debtor SA</Nm></Dbtr>
+<DbtrAcct><Id><IBAN>ES9121000418450200051332</IBAN></Id></DbtrAcct><DbtrAgt><FinInstnId></FinInstnId></DbtrAgt>
 <CdtTrfTxInf><PmtId><EndToEndId>E-8</EndToEndId></PmtId>
 <Amt><InstdAmt Ccy="EUR">10.00</InstdAmt></Amt>
 <Cdtr><Nm>Creditor BV</Nm></Cdtr><CdtrAcct><Id><IBAN>BE68539007547034</IBAN></Id></CdtrAcct>
@@ -156,8 +156,9 @@ fn test_faults() {
     // A wrong control sum faults, and the switch lets it through.
     let bad_sum = """
 <?xml version="1.0"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03">
-<CstmrCdtTrfInitn><GrpHdr><MsgId>M1</MsgId><CtrlSum>99.00</CtrlSum><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
-<PmtInf><PmtInfId>P1</PmtInfId><Dbtr><Nm>Debtor</Nm></Dbtr>
+<CstmrCdtTrfInitn><GrpHdr><MsgId>M1</MsgId><CreDtTm>2026-11-09T09:00:00</CreDtTm><NbOfTxs>1</NbOfTxs><CtrlSum>99.00</CtrlSum><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
+<PmtInf><PmtInfId>P1</PmtInfId><PmtMtd>TRF</PmtMtd><ReqdExctnDt>2026-12-01</ReqdExctnDt><Dbtr><Nm>Debtor</Nm></Dbtr>
+<DbtrAcct><Id><IBAN>NL91ABNA0417164300</IBAN></Id></DbtrAcct><DbtrAgt><FinInstnId></FinInstnId></DbtrAgt>
 <CdtTrfTxInf><PmtId><EndToEndId>E1</EndToEndId></PmtId><Amt><InstdAmt Ccy="EUR">1.00</InstdAmt></Amt>
 <Cdtr><Nm>Cred</Nm></Cdtr><CdtrAcct><Id><IBAN>BE68539007547034</IBAN></Id></CdtrAcct></CdtTrfTxInf>
 </PmtInf></CstmrCdtTrfInitn></Document>
@@ -173,8 +174,9 @@ fn test_faults() {
     // A bad IBAN faults, and the switch turns it off.
     let bad_iban = """
 <?xml version="1.0"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03">
-<CstmrCdtTrfInitn><GrpHdr><MsgId>M1</MsgId><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
-<PmtInf><PmtInfId>P1</PmtInfId><Dbtr><Nm>Debtor</Nm></Dbtr>
+<CstmrCdtTrfInitn><GrpHdr><MsgId>M1</MsgId><CreDtTm>2026-11-09T09:00:00</CreDtTm><NbOfTxs>1</NbOfTxs><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
+<PmtInf><PmtInfId>P1</PmtInfId><PmtMtd>TRF</PmtMtd><ReqdExctnDt>2026-12-01</ReqdExctnDt><Dbtr><Nm>Debtor</Nm></Dbtr>
+<DbtrAcct><Id><IBAN>NL91ABNA0417164300</IBAN></Id></DbtrAcct><DbtrAgt><FinInstnId></FinInstnId></DbtrAgt>
 <CdtTrfTxInf><PmtId><EndToEndId>E1</EndToEndId></PmtId><Amt><InstdAmt Ccy="EUR">1.00</InstdAmt></Amt>
 <Cdtr><Nm>Cred</Nm></Cdtr><CdtrAcct><Id><IBAN>DE89370400440532013001</IBAN></Id></CdtrAcct></CdtTrfTxInf>
 </PmtInf></CstmrCdtTrfInitn></Document>
@@ -194,8 +196,9 @@ fn test_faults() {
     // A text outside the EPC set faults, and the switch turns it off.
     let hostile = """
 <?xml version="1.0"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03">
-<CstmrCdtTrfInitn><GrpHdr><MsgId>M1</MsgId><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
-<PmtInf><PmtInfId>P1</PmtInfId><Dbtr><Nm>Deb*tor</Nm></Dbtr>
+<CstmrCdtTrfInitn><GrpHdr><MsgId>M1</MsgId><CreDtTm>2026-11-09T09:00:00</CreDtTm><NbOfTxs>1</NbOfTxs><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
+<PmtInf><PmtInfId>P1</PmtInfId><PmtMtd>TRF</PmtMtd><ReqdExctnDt>2026-12-01</ReqdExctnDt><Dbtr><Nm>Deb*tor</Nm></Dbtr>
+<DbtrAcct><Id><IBAN>NL91ABNA0417164300</IBAN></Id></DbtrAcct><DbtrAgt><FinInstnId></FinInstnId></DbtrAgt>
 <CdtTrfTxInf><PmtId><EndToEndId>E1</EndToEndId></PmtId><Amt><InstdAmt Ccy="EUR">1.00</InstdAmt></Amt>
 <Cdtr><Nm>Cred</Nm></Cdtr><CdtrAcct><Id><IBAN>BE68539007547034</IBAN></Id></CdtrAcct></CdtTrfTxInf>
 </PmtInf></CstmrCdtTrfInitn></Document>
@@ -533,7 +536,7 @@ fn test_debit_newer_schema() {
 <DrctDbtTxInf><PmtId><EndToEndId>E8</EndToEndId></PmtId><InstdAmt Ccy="EUR">10.00</InstdAmt>
 <DrctDbtTx><MndtRltdInf><MndtId>MD8</MndtId><DtOfSgntr>2025-01-31</DtOfSgntr></MndtRltdInf>
 <CdtrSchmeId><Id><OrgId><Othr><Id>DE98ZZZ09999999999</Id></Othr></OrgId></Id></CdtrSchmeId></DrctDbtTx>
-<Dbtr><Nm>Deb</Nm></Dbtr><DbtrAcct><Id><IBAN>DE89370400440532013000</IBAN></Id></DbtrAcct>
+<DbtrAgt><FinInstnId></FinInstnId></DbtrAgt><Dbtr><Nm>Deb</Nm></Dbtr><DbtrAcct><Id><IBAN>DE89370400440532013000</IBAN></Id></DbtrAcct>
 </DrctDbtTxInf></PmtInf></CstmrDrctDbtInitn></Document>
 """;
     var lim = payment_file::default_limits();
@@ -1400,8 +1403,9 @@ fn test_anybic_and_lei() {
     // A later pain.001 file names the BIC AnyBIC. The reader takes it.
     let tpl = """
 <?xml version="1.0"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.09">
-<CstmrCdtTrfInitn><GrpHdr><MsgId>M1</MsgId><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
-<PmtInf><PmtInfId>P1</PmtInfId><Dbtr><Nm>Debtor</Nm><Id><OrgId><AnyBIC>ABNANL2A</AnyBIC></OrgId></Id></Dbtr>
+<CstmrCdtTrfInitn><GrpHdr><MsgId>M1</MsgId><CreDtTm>2026-11-09T09:00:00</CreDtTm><NbOfTxs>1</NbOfTxs><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
+<PmtInf><PmtInfId>P1</PmtInfId><PmtMtd>TRF</PmtMtd><ReqdExctnDt>2026-12-01</ReqdExctnDt><Dbtr><Nm>Debtor</Nm><Id><OrgId><AnyBIC>ABNANL2A</AnyBIC></OrgId></Id></Dbtr>
+<DbtrAcct><Id><IBAN>NL91ABNA0417164300</IBAN></Id></DbtrAcct><DbtrAgt><FinInstnId></FinInstnId></DbtrAgt>
 <CdtTrfTxInf><PmtId><EndToEndId>E1</EndToEndId></PmtId><Amt><InstdAmt Ccy="EUR">1.00</InstdAmt></Amt>
 <Cdtr><Nm>Cred</Nm></Cdtr><CdtrAcct><Id><IBAN>BE68539007547034</IBAN></Id></CdtrAcct></CdtTrfTxInf>
 </PmtInf></CstmrCdtTrfInitn></Document>
@@ -1757,10 +1761,11 @@ fn test_later_forms() {
     var ropts = payment_file::PainOptions { skip_control_sum_check: true, check_iban: true, epc_charset: true };
     let tpl = """
 <?xml version="1.0"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.09">
-<CstmrCdtTrfInitn><GrpHdr><MsgId>M1</MsgId><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
-<PmtInf><PmtInfId>P1</PmtInfId><PmtTpInf><SvcLvl><Cd>SEPA</Cd></SvcLvl></PmtTpInf>
+<CstmrCdtTrfInitn><GrpHdr><MsgId>M1</MsgId><CreDtTm>2026-11-09T09:00:00</CreDtTm><NbOfTxs>1</NbOfTxs><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
+<PmtInf><PmtInfId>P1</PmtInfId><PmtMtd>TRF</PmtMtd><PmtTpInf><SvcLvl><Cd>SEPA</Cd></SvcLvl></PmtTpInf>
 <ReqdExctnDt>2026-12-01</ReqdExctnDt>
 <Dbtr><Nm>Debtor</Nm><Id><OrgId><AnyBIC>ABNANL2A</AnyBIC></OrgId></Id></Dbtr>
+<DbtrAcct><Id><IBAN>NL91ABNA0417164300</IBAN></Id></DbtrAcct><DbtrAgt><FinInstnId></FinInstnId></DbtrAgt>
 <CdtTrfTxInf><PmtId><EndToEndId>E1</EndToEndId></PmtId><Amt><InstdAmt Ccy="EUR">1.00</InstdAmt></Amt>
 <Cdtr><Nm>Cred</Nm></Cdtr><CdtrAcct><Id><IBAN>BE68539007547034</IBAN></Id></CdtrAcct></CdtTrfTxInf>
 </PmtInf></CstmrCdtTrfInitn></Document>
@@ -1853,6 +1858,91 @@ fn test_proprietary_reference() {
     assert(find(out3, "<CdOrPrtry><Cd>SCOR</Cd></CdOrPrtry>") >= 0);
 }
 
+// renamed_tag renames one element pair in a written message, reads the
+// result and gives the tag of the fault. The kind must be syntax.
+fn renamed_tag(text: const u8[:], o: const u8[:], c: const u8[:], ro: const u8[:], rc: const u8[:], debit: bool) -> const u8[:] {
+    var a: u8[>..] = [];
+    var b: u8[>..] = [];
+    var base: u8[>..] = [];
+    put(base, text);
+    replace_all(base, o, ro, a);
+    replace_all(a, c, rc, b);
+    var lim = payment_file::default_limits();
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    var h = payment_file::new_header();
+    var buf: u8[>..] = [];
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var ditems: payment_file::DirectDebit[>..] = [];
+    var pays: payment_file::PaymentInfo[>..] = [];
+    var items: payment_file::CreditTransfer[>..] = [];
+    let doc: const u8[:] = b[..];
+    var kind = payment_file::F_NONE;
+    var tag: const u8[:] = "";
+    if debit {
+        let r = payment_file::parse_pain008(doc, lim, ropts, h, blocks, ditems, buf);
+        kind = r.kind;
+        tag = r.tag;
+    } else {
+        let r = payment_file::parse_pain001(doc, lim, ropts, h, pays, items, buf);
+        kind = r.kind;
+        tag = r.tag;
+    }
+    if kind != payment_file::F_SYNTAX { return "none"; }
+    return tag;
+}
+
+// The readers refuse a file that lacks an element the schema requires,
+// and the fault names the element. A file that the writer wrote reads.
+fn test_mandatory_elements() {
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var out: u8[>..] = [];
+    assert(sample(wopts, out) == 0);
+    let t1: const u8[:] = out[..];
+    assert(renamed_tag(t1, "<CreDtTm>", "</CreDtTm>", "<Xx>", "</Xx>", false) == "CreDtTm");
+    assert(renamed_tag(t1, "<InitgPty>", "</InitgPty>", "<Xx>", "</Xx>", false) == "InitgPty");
+    assert(renamed_tag(t1, "<PmtInfId>", "</PmtInfId>", "<Xx>", "</Xx>", false) == "PmtInfId");
+    assert(renamed_tag(t1, "<PmtMtd>", "</PmtMtd>", "<Xx>", "</Xx>", false) == "PmtMtd");
+    assert(renamed_tag(t1, "<ReqdExctnDt>", "</ReqdExctnDt>", "<Xx>", "</Xx>", false) == "ReqdExctnDt");
+    assert(renamed_tag(t1, "<Dbtr>", "</Dbtr>", "<Xx>", "</Xx>", false) == "Dbtr");
+    assert(renamed_tag(t1, "<DbtrAcct>", "</DbtrAcct>", "<Xx>", "</Xx>", false) == "DbtrAcct");
+    assert(renamed_tag(t1, "<DbtrAgt>", "</DbtrAgt>", "<Xx>", "</Xx>", false) == "DbtrAgt");
+    assert(renamed_tag(t1, "<DbtrAcct><Id>", "</Id></DbtrAcct>", "<DbtrAcct><Xx>", "</Xx></DbtrAcct>", false) == "Id");
+    assert(renamed_tag(t1, "<DbtrAgt><FinInstnId>", "</FinInstnId></DbtrAgt>", "<DbtrAgt><Xx>", "</Xx></DbtrAgt>", false) == "FinInstnId");
+    assert(renamed_tag(t1, "<PmtId>", "</PmtId>", "<Xx>", "</Xx>", false) == "PmtId");
+    assert(renamed_tag(t1, "<EndToEndId>", "</EndToEndId>", "<Xx>", "</Xx>", false) == "EndToEndId");
+    // A block with no item is a fault.
+    let empty001 = """
+<?xml version="1.0"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03">
+<CstmrCdtTrfInitn><GrpHdr><MsgId>M1</MsgId><CreDtTm>2026-11-09T09:00:00</CreDtTm><NbOfTxs>0</NbOfTxs><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
+<PmtInf><PmtInfId>P1</PmtInfId><PmtMtd>TRF</PmtMtd><ReqdExctnDt>2026-12-01</ReqdExctnDt><Dbtr><Nm>Debtor</Nm></Dbtr>
+<DbtrAcct><Id><IBAN>NL91ABNA0417164300</IBAN></Id></DbtrAcct><DbtrAgt><FinInstnId></FinInstnId></DbtrAgt>
+</PmtInf></CstmrCdtTrfInitn></Document>
+""";
+    assert(swap_kind(empty001, "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+    // The count of the group header.
+    assert(renamed_tag(t1, "<NbOfTxs>", "</NbOfTxs>", "<Xx>", "</Xx>", false) == "NbOfTxs");
+    var dout: u8[>..] = [];
+    assert(sample_debit(wopts, dout) == 0);
+    let t2: const u8[:] = dout[..];
+    assert(renamed_tag(t2, "<CreDtTm>", "</CreDtTm>", "<Xx>", "</Xx>", true) == "CreDtTm");
+    assert(renamed_tag(t2, "<InitgPty>", "</InitgPty>", "<Xx>", "</Xx>", true) == "InitgPty");
+    assert(renamed_tag(t2, "<PmtInfId>", "</PmtInfId>", "<Xx>", "</Xx>", true) == "PmtInfId");
+    assert(renamed_tag(t2, "<PmtMtd>", "</PmtMtd>", "<Xx>", "</Xx>", true) == "PmtMtd");
+    assert(renamed_tag(t2, "<ReqdColltnDt>", "</ReqdColltnDt>", "<Xx>", "</Xx>", true) == "ReqdColltnDt");
+    assert(renamed_tag(t2, "<Cdtr>", "</Cdtr>", "<Xx>", "</Xx>", true) == "Cdtr");
+    assert(renamed_tag(t2, "<CdtrAcct>", "</CdtrAcct>", "<Xx>", "</Xx>", true) == "CdtrAcct");
+    assert(renamed_tag(t2, "<CdtrAgt>", "</CdtrAgt>", "<Xx>", "</Xx>", true) == "CdtrAgt");
+    assert(renamed_tag(t2, "<CdtrAcct><Id>", "</Id></CdtrAcct>", "<CdtrAcct><Xx>", "</Xx></CdtrAcct>", true) == "Id");
+    assert(renamed_tag(t2, "<PmtId>", "</PmtId>", "<Xx>", "</Xx>", true) == "PmtId");
+    assert(renamed_tag(t2, "<EndToEndId>", "</EndToEndId>", "<Xx>", "</Xx>", true) == "EndToEndId");
+    assert(renamed_tag(t2, "<DbtrAgt>", "</DbtrAgt>", "<Xx>", "</Xx>", true) == "DbtrAgt");
+    assert(renamed_tag(t2, "<Dbtr>", "</Dbtr>", "<Xx>", "</Xx>", true) == "Dbtr");
+    assert(renamed_tag(t2, "<DbtrAcct>", "</DbtrAcct>", "<Xx>", "</Xx>", true) == "DbtrAcct");
+    // An unchanged file reads.
+    assert(renamed_tag(t1, "<Zz>", "</Zz>", "<Xx>", "</Xx>", false) == "none");
+    assert(renamed_tag(t2, "<Zz>", "</Zz>", "<Xx>", "</Xx>", true) == "none");
+}
+
 // The service level comes back over a round trip in both messages.
 fn test_service_level_round_trip() {
     var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
@@ -1913,6 +2003,7 @@ fn main() {
     test_later_forms();
     test_proprietary_reference();
     test_service_level_round_trip();
+    test_mandatory_elements();
     test_code_lists();
     test_missing_amount();
     test_amount_overflow();

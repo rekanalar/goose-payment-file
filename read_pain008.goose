@@ -49,7 +49,7 @@ fn parse_pain008(input: const u8[:], lim: Limits&, opts: PainOptions&,
     let msg, df = check_doc(doc, lim, "CstmrDrctDbtInitn");
     if df.kind != F_NONE { return df; }
     header = new_header();
-    let cs, gf = parse_group(doc, msg, opts, lim, header, buf);
+    let cs, gf = parse_group(doc, msg, opts, lim, header, buf, true);
     if gf.kind != F_NONE { return gf; }
     var c = doc.nodes[msg].first_child;
     while c >= 0 {
@@ -88,6 +88,8 @@ fn parse_pain008(input: const u8[:], lim: Limits&, opts: PainOptions&,
 fn parse_debit_block(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
                      blocks: DebitInfo[>..]&, cur: i64, items: DirectDebit[>..]&,
                      buf: u8[>..]&) -> Fault {
+    let nf0 = need_block(doc, id, "ReqdColltnDt", "Cdtr", "CdtrAcct", "CdtrAgt");
+    if nf0.kind != F_NONE { return nf0; }
     let pid = child(doc, id, "PmtInfId");
     if pid >= 0 { blocks[cur].id = text_of(doc, pid, buf); }
     let idf = check_text(blocks[cur].id, 35, "PmtInfId", opts.epc_charset, lim);
@@ -194,13 +196,19 @@ fn parse_debit_block(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
         sum = t;
     }
     if count > 0 { return check_block_totals(doc, id, count, sum, items[start].amount.code, opts, buf); }
-    return check_block_totals(doc, id, count, sum, "", opts, buf);
+    let tf0 = check_block_totals(doc, id, count, sum, "", opts, buf);
+    if tf0.kind != F_NONE { return tf0; }
+    return missing_items("DrctDbtTxInf");
 }
 
 // parse_debit reads one collection.
 fn parse_debit(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
                blocks: DebitInfo[>..]&, cur: i64, items: DirectDebit[>..]&, at: i64,
                buf: u8[>..]&) -> Fault {
+    let nf0 = need_pmt_id(doc, id);
+    if nf0.kind != F_NONE { return nf0; }
+    let nf1 = need_parties(doc, id, "Dbtr", "DbtrAcct", "DbtrAgt");
+    if nf1.kind != F_NONE { return nf1; }
     let pid = child(doc, id, "PmtId");
     if pid >= 0 {
         let eid = child(doc, pid, "EndToEndId");

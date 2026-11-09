@@ -23,7 +23,7 @@ Every parse is one linear pass with no recursion. Every size has a limit.
 Add these lines to the root file of the program that uses it:
 
 ```goose
-import payment_file from "rekanalar/goose-payment-file@v0.12.0";
+import payment_file from "rekanalar/goose-payment-file@v0.13.0";
 import xml from "rekanalar/goose-xml@v2.0.0";
 import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
@@ -108,6 +108,19 @@ creditor scheme id from the block or from the transaction.
 The writer needs the creation time and the execution date, because the
 schema makes both mandatory. It writes the elements in schema order.
 An amount below zero is a fault in the reader and in the writer.
+
+The readers refuse a file that lacks an element the schema requires.
+The fault holds the kind syntax, and its tag names the element.
+Every schema form of both messages names the same required elements.
+
+The group header needs `MsgId`, `CreDtTm`, `NbOfTxs` and `InitgPty`.
+A payment block needs `PmtInfId`, `PmtMtd`, the date and one item.
+The pain.001 block needs `Dbtr`, `DbtrAcct` and `DbtrAgt`.
+The pain.008 block needs `Cdtr`, `CdtrAcct` and `CdtrAgt`.
+An account needs its `Id`. An agent needs its `FinInstnId`.
+
+An item needs `PmtId` with `EndToEndId`.
+A pain.008 item needs `DbtrAgt`, `Dbtr` and `DbtrAcct`.
 
 Both SEPA messages hold a payment type block with a service level. The
 writer writes the value of the model. An empty value means `SEPA`.
@@ -381,6 +394,10 @@ sum, so the reader checks the count only.
 - **The `pacs.008` reader refuses a two-currency message with a sum.**
   A sum over two currencies means nothing. The writer writes no sum for
   such a message.
+- **The readers need an element, not its content.** An agent with an
+  empty `FinInstnId` reads, because the schema allows it. The reader
+  holds an empty BIC in that case. A text limit still refuses a
+  present element with a bad text.
 - **The `pacs.008` reader refuses a group header with no count.** The
   count is mandatory in the schema.
 - **The ADV entry takes no addenda record.** The reference library
@@ -523,6 +540,10 @@ Protections beyond the reference libraries:
   alone is a fault. It refuses a reference that holds the code and the
   proprietary text together.
 
+- **The reader refuses a missing required element.** A file that fails
+  the schema no longer reads with silent empty fields. Python sepaxml
+  validates against the schema. The package checks the required
+  elements and not the full schema.
 - **The reader refuses a service level with no code.** The schema
   allows a proprietary text instead of a code. The package holds the
   code form only. A code that holds a child element is a fault.

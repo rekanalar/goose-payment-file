@@ -348,7 +348,7 @@ fn parse_pacs008(input: const u8[:], lim: Limits&, opts: PainOptions&,
     let msg, df = check_doc(doc, lim, "FIToFICstmrCdtTrf");
     if df.kind != F_NONE { return df; }
     header = new_pacs008_header();
-    let cs, gf = parse_group(doc, msg, opts, lim, header.base, buf);
+    let cs, gf = parse_group(doc, msg, opts, lim, header.base, buf, false);
     if gf.kind != F_NONE { return gf; }
     let grp = child(doc, msg, "GrpHdr");
     let hf = read_pacs008_header(doc, msg, opts, lim, header, buf);

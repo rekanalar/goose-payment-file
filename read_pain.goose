@@ -292,11 +292,65 @@ fn check_doc(doc: xml::Doc&, lim: Limits&, container: const u8[:]) -> i32, Fault
     return msg, no_fault();
 }
 
+// need gives the node of a child element that the schema requires. A
+// missing element is a fault that names it.
+fn need(doc: xml::Doc&, id: i32, tag: const u8[:]) -> i32, Fault {
+    let c = child(doc, id, tag);
+    if c < 0 { return -1, fault(F_SYNTAX, 0, 0, tag, "the schema requires this element and it is missing"); }
+    return c, no_fault();
+}
+
+// need_parties checks the party, the account with its Id and the agent
+// with its FinInstnId. Both messages hold the three in each block, and
+// the pain.008 item holds them too.
+fn need_parties(doc: xml::Doc&, id: i32, party: const u8[:], acct: const u8[:],
+                agent: const u8[:]) -> Fault {
+    let _, f1 = need(doc, id, party);
+    if f1.kind != F_NONE { return f1; }
+    let a, f2 = need(doc, id, acct);
+    if f2.kind != F_NONE { return f2; }
+    let _, f3 = need(doc, a, "Id");
+    if f3.kind != F_NONE { return f3; }
+    let g, f4 = need(doc, id, agent);
+    if f4.kind != F_NONE { return f4; }
+    let _, f5 = need(doc, g, "FinInstnId");
+    return f5;
+}
+
+// need_block checks the elements that a payment block of either message
+// requires before its items.
+fn need_block(doc: xml::Doc&, id: i32, date: const u8[:], party: const u8[:],
+              acct: const u8[:], agent: const u8[:]) -> Fault {
+    let _, f1 = need(doc, id, "PmtInfId");
+    if f1.kind != F_NONE { return f1; }
+    let _, f2 = need(doc, id, "PmtMtd");
+    if f2.kind != F_NONE { return f2; }
+    let _, f3 = need(doc, id, date);
+    if f3.kind != F_NONE { return f3; }
+    return need_parties(doc, id, party, acct, agent);
+}
+
+// need_pmt_id checks the payment identification of an item and its
+// end to end id.
+fn need_pmt_id(doc: xml::Doc&, id: i32) -> Fault {
+    let p, f1 = need(doc, id, "PmtId");
+    if f1.kind != F_NONE { return f1; }
+    let _, f2 = need(doc, p, "EndToEndId");
+    return f2;
+}
+
+// missing_items is the fault of a block that holds no item.
+fn missing_items(tag: const u8[:]) -> Fault {
+    return fault(F_SYNTAX, 0, 0, tag, "the schema requires this element and it is missing");
+}
+
 // parse_group reads the group header: the message id, the creation
 // time, the count and the initiator. It gives the node of the control
-// sum, or -1 when the header holds none.
+// sum, or -1 when the header holds none. The schema requires the first
+// three. The flag asks for the initiator, which the pain messages
+// require and the pacs message does not.
 fn parse_group(doc: xml::Doc&, msg: i32, opts: PainOptions&, lim: Limits&,
-               header: GrpHeader&, buf: u8[>..]&) -> i32, Fault {
+               header: GrpHeader&, buf: u8[>..]&, needs_initiator: bool) -> i32, Fault {
     let grp = child(doc, msg, "GrpHdr");
     if grp < 0 { return -1, fault(F_SYNTAX, 0, 0, "", "the message holds no group header"); }
     let mid = child(doc, grp, "MsgId");
@@ -304,11 +358,16 @@ fn parse_group(doc: xml::Doc&, msg: i32, opts: PainOptions&, lim: Limits&,
     header.message_id = text_of(doc, mid, buf);
     let mf = check_text(header.message_id, 35, "MsgId", opts.epc_charset, lim);
     if mf.kind != F_NONE { return -1, mf; }
-    let cdt = child(doc, grp, "CreDtTm");
-    if cdt >= 0 {
-        let cf = parse_datetime(text_of(doc, cdt, buf), header, buf);
-        if cf.kind != F_NONE { return -1, cf; }
+    let cdt, cdf = need(doc, grp, "CreDtTm");
+    if cdf.kind != F_NONE { return -1, cdf; }
+    let _, nbf = need(doc, grp, "NbOfTxs");
+    if nbf.kind != F_NONE { return -1, nbf; }
+    if needs_initiator {
+        let _, ipf = need(doc, grp, "InitgPty");
+        if ipf.kind != F_NONE { return -1, ipf; }
     }
+    let cf = parse_datetime(text_of(doc, cdt, buf), header, buf);
+    if cf.kind != F_NONE { return -1, cf; }
     let nb = child(doc, grp, "NbOfTxs");
     if nb >= 0 {
         let n, okn = digits_value(text_of(doc, nb, buf));
@@ -383,7 +442,7 @@ fn parse_pain001(input: const u8[:], lim: Limits&, opts: PainOptions&,
     let msg, df = check_doc(doc, lim, "CstmrCdtTrfInitn");
     if df.kind != F_NONE { return df; }
     header = new_header();
-    let cs, gf = parse_group(doc, msg, opts, lim, header, buf);
+    let cs, gf = parse_group(doc, msg, opts, lim, header, buf, true);
     if gf.kind != F_NONE { return gf; }
     // The payment blocks.
     var c = doc.nodes[msg].first_child;
@@ -558,6 +617,8 @@ fn read_service_level(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
 fn parse_pmt_inf(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
                  payments: PaymentInfo[>..]&, cur: i64, items: CreditTransfer[>..]&,
                  buf: u8[>..]&) -> Fault {
+    let nf0 = need_block(doc, id, "ReqdExctnDt", "Dbtr", "DbtrAcct", "DbtrAgt");
+    if nf0.kind != F_NONE { return nf0; }
     let pid = child(doc, id, "PmtInfId");
     if pid >= 0 { payments[cur].id = text_of(doc, pid, buf); }
     let idf = check_text(payments[cur].id, 35, "PmtInfId", opts.epc_charset, lim);
@@ -652,12 +713,16 @@ fn parse_pmt_inf(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
         sum = t;
     }
     if count > 0 { return check_block_totals(doc, id, count, sum, items[start].amount.code, opts, buf); }
-    return check_block_totals(doc, id, count, sum, "", opts, buf);
+    let tf0 = check_block_totals(doc, id, count, sum, "", opts, buf);
+    if tf0.kind != F_NONE { return tf0; }
+    return missing_items("CdtTrfTxInf");
 }
 
 // parse_item reads one credit transfer item.
 fn parse_item(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
               items: CreditTransfer[>..]&, cur: i64, buf: u8[>..]&) -> Fault {
+    let nf0 = need_pmt_id(doc, id);
+    if nf0.kind != F_NONE { return nf0; }
     let pid = child(doc, id, "PmtId");
     if pid >= 0 {
         let iid = child(doc, pid, "InstrId");
