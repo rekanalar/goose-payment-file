@@ -796,6 +796,9 @@ fn main() {
     test_shr_terminal_required();
     test_name_rule();
     test_mte_reader_refusals();
+    test_adv_round_trip();
+    test_adv_columns();
+    test_adv_refusals();
     test_sec_refusals();
     test_sec_bad_return_codes();
     test_sec_mixed();
@@ -3130,6 +3133,215 @@ fn test_mte_reader_refusals() {
     var es3: payment_file::AchEntry[>..] = [];
     var ads3: payment_file::AchAddenda[>..] = [];
     assert(sec_parse(out3, bs3, es3, ads3) != payment_file::F_NONE);
+}
+
+// adv_build writes a file with one advice batch of two entries.
+fn adv_build(code2: i64, name: const u8[:], out: u8[>..]&) -> i32 {
+    return adv_build_mode(code2, name, 0, out);
+}
+
+// adv_build_mode breaks one rule of the batch: 1 blank account, 2 Julian
+// day 0, 3 sequence 0, 4 equal sequence numbers, 5 service class 200,
+// 6 originator status 1.
+fn adv_build_mode(code2: i64, name: const u8[:], mode: i64, out: u8[>..]&) -> i32 {
+    var entries: payment_file::AdvEntry[>..] = [];
+    var e = payment_file::new_adv_entry();
+    e.transaction_code = 81;
+    e.rdfi_routing = "121140399";
+    e.account = "00012345678";
+    e.amount = 123456;
+    e.advice_routing_number = "021000021";
+    e.file_identification = "FILE1";
+    e.ach_operator_data = "A";
+    e.individual_name = name;
+    e.discretionary = "DD";
+    e.ach_operator_routing_number = "12114039";
+    e.julian_day = 313;
+    e.sequence_number = 1;
+    entries.push(e);
+    var e2 = e;
+    e2.transaction_code = code2;
+    e2.amount = 99999999999;
+    e2.sequence_number = 2;
+    if mode == 1 { e2.account = ""; }
+    if mode == 2 { e2.julian_day = 0; }
+    if mode == 3 { e2.sequence_number = 0; }
+    if mode == 4 { e2.sequence_number = 1; }
+    entries.push(e2);
+    var batches: payment_file::AchBatch[>..] = [];
+    var b = payment_file::new_ach_batch();
+    b.service_class = 280;
+    if mode == 5 { b.service_class = 200; }
+    b.company_name = "Acme Corp";
+    b.company_id = "1234567890";
+    b.sec_code = "ADV";
+    b.description = "ADVICE";
+    b.effective_year = 2026; b.effective_month = 11; b.effective_day = 10;
+    b.originator_status = 0;
+    if mode == 6 { b.originator_status = 1; }
+    b.odfi_id = "12114039";
+    b.batch_number = 1;
+    b.entry_start = 0;
+    b.entry_count = 2;
+    batches.push(b);
+    var h = payment_file::new_ach_file_header();
+    h.destination_routing = "121140399";
+    h.origin_id = "1234567890";
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    h.creation_hour = 14; h.creation_minute = 30;
+    h.id_modifier = "A";
+    h.destination_name = "Bank";
+    h.origin_name = "Corp";
+    var lim = payment_file::default_limits();
+    return payment_file::write_ach_adv(h, batches, entries, lim, out).kind;
+}
+
+fn adv_parse(out: u8[>..]&, es: payment_file::AdvEntry[>..]&) -> i32 {
+    var h = payment_file::new_ach_file_header();
+    var lim = payment_file::default_limits();
+    var opts = payment_file::new_ach_options();
+    var bs: payment_file::AchBatch[>..] = [];
+    return payment_file::parse_ach_adv(out, opts, lim, h, bs, es).kind;
+}
+
+fn test_adv_round_trip() {
+    var out: u8[>..] = [];
+    assert(adv_build(84, "Receiver", out) == payment_file::F_NONE);
+    // 6 records pad to one block of 10.
+    assert(out.len == 10 * 95);
+    var es: payment_file::AdvEntry[>..] = [];
+    assert(adv_parse(out, es) == payment_file::F_NONE);
+    assert(es.len == 2);
+    assert(es[0].transaction_code == 81 && es[0].amount == 123456);
+    assert(es[0].rdfi_routing == "121140399" && es[0].account == "00012345678");
+    assert(es[0].advice_routing_number == "021000021" && es[0].file_identification == "FILE1");
+    assert(es[0].individual_name == "Receiver" && es[0].julian_day == 313);
+    assert(es[1].transaction_code == 84 && es[1].amount == 99999999999);
+    assert(es[1].sequence_number == 2);
+}
+
+fn test_adv_columns() {
+    var out: u8[>..] = [];
+    assert(adv_build(84, "Receiver", out) == payment_file::F_NONE);
+    let r = find(out, "\n6") + 1;
+    assert(out[r + 1] == '8' && out[r + 2] == '1');
+    assert(bytes_at(out, r + 3, "12114039"));
+    assert(out[r + 11] == '9');
+    assert(bytes_at(out, r + 27, "000000123456"));
+    assert(bytes_at(out, r + 39, "021000021"));
+    assert(bytes_at(out, r + 48, "FILE1A"));
+    assert(bytes_at(out, r + 54, "Receiver"));
+    assert(out[r + 78] == '0');
+    assert(bytes_at(out, r + 79, "12114039"));
+    assert(bytes_at(out, r + 87, "3130001"));
+    // The batch control holds twenty digit totals: debit then credit.
+    let c = find(out, "\n8") + 1;
+    assert(bytes_at(out, c + 1, "280000002"));
+    assert(bytes_at(out, c + 20, "00000000099999999999"));
+    assert(bytes_at(out, c + 40, "00000000000000123456"));
+    // The file control holds the same totals at columns 32 to 71.
+    let f = find(out, "\n9") + 1;
+    assert(bytes_at(out, f + 31, "00000000099999999999"));
+    assert(bytes_at(out, f + 51, "00000000000000123456"));
+    assert(out[f + 71] == ' ' && out[f + 93] == ' ');
+}
+
+fn test_adv_refusals() {
+    var out: u8[>..] = [];
+    assert(adv_build(40, "Receiver", out) == payment_file::F_SYNTAX);
+    assert(adv_build(84, "", out) == payment_file::F_SYNTAX);
+    assert(adv_build_mode(84, "Receiver", 1, out) == payment_file::F_SYNTAX);
+    assert(adv_build_mode(84, "Receiver", 2, out) == payment_file::F_DATE);
+    assert(adv_build_mode(84, "Receiver", 3, out) == payment_file::F_LIMIT);
+    assert(adv_build_mode(84, "Receiver", 4, out) == payment_file::F_TOTAL);
+    assert(adv_build_mode(84, "Receiver", 5, out) == payment_file::F_SYNTAX);
+    assert(adv_build_mode(84, "Receiver", 6, out) == payment_file::F_SYNTAX);
+    assert(out.len == 0);
+    // A flipped byte of the debit total is a fault.
+    assert(adv_build(84, "Receiver", out) == payment_file::F_NONE);
+    let c = find(out, "\n8") + 1;
+    out[c + 39] = '7';
+    var es: payment_file::AdvEntry[>..] = [];
+    assert(adv_parse(out, es) == payment_file::F_TOTAL);
+    // A normal file control record is no advice file control.
+    var out2: u8[>..] = [];
+    assert(adv_build(84, "Receiver", out2) == payment_file::F_NONE);
+    let f = find(out2, "\n9") + 1;
+    var k: i64 = 55;
+    while k < 71 { out2[f + k] = ' '; k += 1; }
+    var es2: payment_file::AdvEntry[>..] = [];
+    assert(adv_parse(out2, es2) != payment_file::F_NONE);
+    // The reader holds the blank rules of the writer.
+    var cuts: i64[>..] = [12, 39, 48, 54, 79];
+    var ci: i64 = 0;
+    while ci < cuts.len {
+        var o4: u8[>..] = [];
+        assert(adv_build(84, "Receiver", o4) == payment_file::F_NONE);
+        let r4 = find(o4, "\n6") + 1;
+        let from = cuts[ci];
+        var to = from + 15;
+        if from == 39 { to = from + 9; }
+        if from == 48 { to = from + 5; }
+        if from == 54 { to = from + 22; }
+        if from == 79 { to = from + 8; }
+        var q: i64 = from;
+        while q < to { o4[r4 + q] = ' '; q += 1; }
+        var es4: payment_file::AdvEntry[>..] = [];
+        assert(adv_parse(o4, es4) == payment_file::F_SYNTAX);
+        ci += 1;
+    }
+    // An addenda indicator of 1 is a fault.
+    var o5: u8[>..] = [];
+    assert(adv_build(84, "Receiver", o5) == payment_file::F_NONE);
+    let r5 = find(o5, "\n6") + 1;
+    o5[r5 + 78] = '1';
+    var es5: payment_file::AdvEntry[>..] = [];
+    assert(adv_parse(o5, es5) == payment_file::F_LIMIT);
+    // A normal file with a wide file control record is refused.
+    var o6: u8[>..] = [];
+    assert(sec_build("PPD", 22, 100, 220, "", "123", "Receiver", "NY", 0, 0, o6) == payment_file::F_NONE);
+    let f6 = find(o6, "\n9") + 1;
+    o6[f6 + 60] = '1';
+    var bs6: payment_file::AchBatch[>..] = [];
+    var es6: payment_file::AchEntry[>..] = [];
+    var ad6: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(o6, bs6, es6, ad6) == payment_file::F_SYNTAX);
+    // A total that does not fit an i64 is a fault, not a wrapped value.
+    var o7: u8[>..] = [];
+    assert(adv_build(84, "Receiver", o7) == payment_file::F_NONE);
+    let c7 = find(o7, "\n8") + 1;
+    var w: i64 = 0;
+    while w < 20 { o7[c7 + 20 + w] = '9'; w += 1; }
+    var es7: payment_file::AdvEntry[>..] = [];
+    assert(adv_parse(o7, es7) == payment_file::F_OVERFLOW);
+    // A batch with no entry is a fault.
+    var o8: u8[>..] = [];
+    assert(adv_build(84, "Receiver", o8) == payment_file::F_NONE);
+    let r8 = find(o8, "\n6") + 1;
+    // Drop the two entry records and put the control record in their place.
+    var o8b: u8[>..] = [];
+    var w8: i64 = 0;
+    while w8 < o8.len {
+        if w8 == r8 { w8 = r8 + 190; continue; }
+        o8b.push(o8[w8]);
+        w8 += 1;
+    }
+    var es8: payment_file::AdvEntry[>..] = [];
+    assert(adv_parse(o8b, es8) == payment_file::F_SYNTAX);
+    // The control record must agree with the batch header.
+    var o9: u8[>..] = [];
+    assert(adv_build(84, "Receiver", o9) == payment_file::F_NONE);
+    let c9 = find(o9, "\n8") + 1;
+    o9[c9 + 79] = '9';
+    var es9: payment_file::AdvEntry[>..] = [];
+    assert(adv_parse(o9, es9) == payment_file::F_TOTAL);
+    // The normal reader refuses an advice file.
+    var out3: u8[>..] = [];
+    assert(adv_build(84, "Receiver", out3) == payment_file::F_NONE);
+    var bs: payment_file::AchBatch[>..] = [];
+    var es3: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(out3, bs, es3, ads) != payment_file::F_NONE);
 }
 
 fn test_name_rule() {

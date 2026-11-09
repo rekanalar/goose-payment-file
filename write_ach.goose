@@ -596,11 +596,15 @@ fn write_ach_file_header(out: u8[>..]&, h: AchFileHeader) -> Fault {
 
 // write_ach_batch_header writes record 5.
 fn write_ach_batch_header(out: u8[>..]&, b: AchBatch) -> Fault {
-    if !service_class_ok(b.service_class) {
-        return fault(F_SYNTAX, 0, 0, "5", "the service class is not 200, 220 or 225");
+    // The service class 280 belongs to the SEC code ADV and to no other.
+    if !service_class_ok(b.service_class) && b.service_class != 280 {
+        return fault(F_SYNTAX, 0, 0, "5", "the service class is not 200, 220, 225 or 280");
     }
-    if !sec_ok(b.sec_code) {
+    if !sec_ok(b.sec_code) && b.sec_code != "ADV" {
         return fault(F_SYNTAX, 0, 0, "5", "the SEC code is not one of the codes of the package");
+    }
+    if (b.service_class == 280) != (b.sec_code == "ADV") {
+        return fault(F_SYNTAX, 0, 0, "5", "the service class 280 and the SEC code ADV go together");
     }
     if b.originator_status < 0 || b.originator_status > 2 {
         return fault(F_SYNTAX, 0, 0, "5", "the originator status is not 0, 1 or 2");
@@ -1043,6 +1047,9 @@ fn write_ach(h: AchFileHeader, batches: AchBatch[>..]&, entries: AchEntry[>..]&,
     q = 0;
     while q < batches.len {
         let b = batches[q];
+        if b.sec_code == "ADV" {
+            return fault(F_SYNTAX, 0, 0, "5", "an advice batch needs write_ach_adv");
+        }
         let bf = write_ach_batch_header(body, b);
         if bf.kind != F_NONE { return bf; }
         put_rec(body);

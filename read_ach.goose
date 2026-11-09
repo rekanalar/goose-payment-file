@@ -47,6 +47,20 @@ fn trim_r(text: const u8[:]) -> const u8[:] {
     return text[0..end];
 }
 
+// tail_spaces checks that the columns from..to of a record hold only
+// spaces. A control record of the other kind holds digits there.
+fn tail_spaces(rec: const u8[:], from: i64, to: i64, line: i64, tag: const u8[:]) -> Fault {
+    let t = fld(rec, from, to);
+    var i: i64 = 0;
+    while i < t.len {
+        if t[i] != ' ' {
+            return fault(F_SYNTAX, line, from + i, tag, "the control record holds a byte other than a space");
+        }
+        i += 1;
+    }
+    return no_fault();
+}
+
 // num_fld reads a numeric field. Anything but digits is a fault.
 fn num_fld(rec: const u8[:], from: i64, to: i64, line: i64, tag: const u8[:]) -> i64, Fault {
     let s = fld(rec, from, to);
@@ -147,8 +161,8 @@ fn parse_ach_file_header(rec: const u8[:], line: i64, h: AchFileHeader&) -> Faul
 fn parse_ach_batch_header(rec: const u8[:], line: i64, b: AchBatch&) -> Fault {
     let sc, f0 = num_fld(rec, 2, 4, line, "5");
     if f0.kind != F_NONE { return f0; }
-    if !service_class_ok(sc) {
-        return fault(F_SYNTAX, line, 2, "5", "the service class is not 200, 220 or 225");
+    if !service_class_ok(sc) && sc != 280 {
+        return fault(F_SYNTAX, line, 2, "5", "the service class is not 200, 220, 225 or 280");
     }
     b.service_class = sc;
     let cn, f1 = txt_fld(rec, 5, 20, line, "5");
@@ -161,8 +175,11 @@ fn parse_ach_batch_header(rec: const u8[:], line: i64, b: AchBatch&) -> Fault {
     if f3.kind != F_NONE { return f3; }
     b.company_id = ci;
     let sec = fld(rec, 51, 53);
-    if !sec_ok(sec) {
+    if !sec_ok(sec) && sec != "ADV" {
         return fault(F_SYNTAX, line, 51, "5", "the SEC code is not one of the codes of the package");
+    }
+    if (sc == 280) != (sec == "ADV") {
+        return fault(F_SYNTAX, line, 2, "5", "the service class 280 and the SEC code ADV go together");
     }
     b.sec_code = sec;
     let de, f4 = txt_fld(rec, 54, 63, line, "5");
@@ -1008,6 +1025,9 @@ fn parse_ach_iat(input: const u8[:], opts: AchOptions, lim: Limits&, h: AchFileH
             } else {
                 let bf = parse_ach_batch_header(rec, line, batch);
                 if bf.kind != F_NONE { return bf; }
+                if batch.sec_code == "ADV" {
+                    return fault(F_SYNTAX, line, 51, "5", "an advice batch needs parse_ach_adv");
+                }
                 batch.entry_start = entries.len as i32;
                 batch.entry_count = 0;
                 iat_mode = false;
@@ -1236,6 +1256,10 @@ fn parse_ach_iat(input: const u8[:], opts: AchOptions, lim: Limits&, h: AchFileH
             if g4.kind != F_NONE { return g4; }
             let fcr, g5 = num_fld(rec, 44, 55, line, "9");
             if g5.kind != F_NONE { return g5; }
+            // Columns 56 to 94 hold spaces. A wide advice file control
+            // holds digits there and is no normal file control.
+            let ts = tail_spaces(rec, 56, 94, line, "9");
+            if ts.kind != F_NONE { return ts; }
             let blocks = (records + 1 + 9) / 10;
             if !opts.skip_total_check {
                 if fbc != batches.len + ib.len {

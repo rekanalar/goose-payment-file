@@ -23,7 +23,7 @@ Every parse is one linear pass with no recursion. Every size has a limit.
 Add these lines to the root file of the program that uses it:
 
 ```goose
-import payment_file from "rekanalar/goose-payment-file@v0.7.0";
+import payment_file from "rekanalar/goose-payment-file@v0.8.0";
 import xml from "rekanalar/goose-xml@v2.0.0";
 import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
@@ -55,6 +55,8 @@ the line to add.
 | `parse_ach(input, opts, lim, header, batches, entries, addenda)` | reads a NACHA file and checks the control records |
 | `write_ach_iat(header, batches, entries, addenda, lim, out)` | writes a NACHA file with one batch of the SEC code IAT |
 | `parse_ach_iat(input, opts, lim, header, batches, entries, addenda, iat_batches, iat_entries, iat_addenda)` | reads a NACHA file that holds IAT batches |
+| `write_ach_adv(header, batches, entries, lim, out)` | writes a NACHA file with one batch of the SEC code ADV |
+| `parse_ach_adv(input, opts, lim, header, batches, entries)` | reads a NACHA file that holds ADV batches |
 | `AchFileHeader` | record 1: the routing number, the origin id, the creation time, the names |
 | `AchBatch` | records 5 and 8: the service class, the company, the SEC code, the effective date, the entry range |
 | `AchEntry` | record 6: the transaction code, the routing number, the account, the amount in cents, the trace number |
@@ -65,6 +67,8 @@ the line to add.
 | `AchOptions` | the reader switches: `skip_total_check`, `check_routing` |
 | `new_ach_file_header()`, `new_ach_batch()`, `new_ach_entry()`, `new_ach_addenda()`, `new_ach_options()` | the zero values of the ACH structs |
 | `new_iat_batch()`, `new_iat_entry()`, `new_iat_addenda(kind)` | the zero values of the IAT structs |
+| `AdvEntry` | record 6 of an ADV batch: the transaction code, the routing number, the account, the amount, the advice routing number, the name, the Julian day |
+| `new_adv_entry()` | the zero value of the ADV struct |
 | `write_pacs008(header, txs, opts, lim, out)` | writes the customer credit transfer as pacs.008.001.08 XML |
 | `parse_pacs008(input, lim, opts, header, txs, buf)` | reads a customer credit transfer of any `.001.NN` form |
 | `Pacs008Header` | the group header, the settlement method, the settlement date, the two agents |
@@ -139,7 +143,8 @@ hold 2500.00 at most. The trace numbers of a batch ascend.
 
 The SEC codes are PPD, CCD, WEB, TEL, CTX, ARC, BOC, POP and RCK. The
 package also takes ACK, ATX, CIE, COR, DNE, ENR, MTE, SHR, TRC, TRX, XCK
-and IAT. The transaction codes are the checking, savings, general ledger
+and IAT. The SEC code ADV has a layout of its own and a writer and a
+reader of its own. The transaction codes are the checking, savings, general ledger
 and loan codes. The file
 holds two digits of the year. The dates run from 2000 to 2099.
 
@@ -185,6 +190,37 @@ with 22 characters.
 
 A blank or all-zero name is a fault for twelve SEC codes. They are ARC,
 BOC, CIE, DNE, ENR, MTE, POP, PPD, RCK, SHR, TEL and WEB.
+
+## The ADV batch
+
+The SEC code ADV holds an automated accounting advice. Its batch header
+is the normal one, with the service class 280 and the originator
+status 0. Its entry record has a layout of its own.
+
+It holds the transaction code of the advice set. It holds the eight
+digits of the routing number and its check digit. It holds the account
+and the amount with twelve digits. It holds the advice routing number,
+the file identification and the operator data.
+
+It holds the name of 22 characters and the discretionary data. It
+holds the addenda indicator, the operator routing number, the Julian day
+and the sequence number. It holds no trace number.
+
+The transaction codes of the advice set run from 81 to 88. The odd
+codes move money into the account. The even codes move money out of
+it.
+
+The batch control record of an ADV batch holds twenty digits of debit
+total and twenty digits of credit total. The file control record holds
+the same wide totals.
+
+Every other SEC code uses twelve digits. A file of one kind never
+reads as a file of the other kind.
+
+The writer `write_ach_adv` holds ADV batches only. The reader
+`parse_ach_adv` reads ADV files only. The normal writer refuses an ADV
+batch. The normal reader refuses one too. The file header and the batch
+header keep the normal layout in both.
 
 ## The IAT batch
 
@@ -296,9 +332,12 @@ sum, so the reader checks the count only.
   such a message.
 - **The `pacs.008` reader refuses a group header with no count.** The
   count is mandatory in the schema.
-- **ADV stays out.** It is the one SEC code that the package refuses.
-  ADV carries an entry record, a batch control record and a file
-  control total of its own. The reader and the writer refuse it.
+- **The ADV entry takes no addenda record.** The reference library
+  takes an addenda 99 record, which returns an advice entry. This
+  release refuses it. The addenda indicator of an ADV entry is 0.
+- **The ADV writer writes one batch kind per file.** The ADV writer
+  holds ADV batches only. The normal writer holds the other batches.
+  A file with both kinds comes from the reader alone.
 - **The CIE layout changed.** The old form held the identification
   number first, in columns 40 to 54. The new form holds the name first,
   with 15 characters. A file in the old form
@@ -355,6 +394,9 @@ Protections beyond the reference libraries:
   matches the blocks.
 - **A 64-bit overflow is a fault.** The reader checks each digit step.
   The value `92233720368547758.08` is a fault, not a negative number.
+  The wide totals of an advice file hold twenty digits. A total that
+  does not fit an i64 is a fault too. The reader checks every digit
+  step of those totals.
 - **The amounts are exact.** An amount is minor units of the
   currency. No call of the package puts a float into an amount.
 - **Every size has a limit.** The limits cover the input, the payment
@@ -403,6 +445,17 @@ NACHA protections beyond the reference library `moov-io/ach`:
 - **The two text widths are exact.** The writer refuses a CIE or MTE
   name above 15 characters. It refuses an identification number above
   22.
+- **The advice control record agrees with its header.** The reader
+  checks the service class against the header. It checks the ODFI id
+  against the header. It checks the batch number against the header.
+- **An advice batch holds an entry.** The reader refuses a batch
+  without one. The writer refuses it too.
+- **The advice fields are checked.** An advice entry holds no blank
+  account. It holds no blank advice routing number. It holds no blank
+  file identification. It holds no blank operator routing number. It
+  holds no blank name. The reader holds the same rules as the writer.
+- **The service class 280 goes with the SEC code ADV.** One without
+  the other is a fault.
 - **The plain return refuses the codes of the two forms.** A plain
   record with such a code is a fault. The reader would read the file
   as the other form, so the writer refuses it first.
