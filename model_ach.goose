@@ -67,6 +67,7 @@ struct AchEntry {
 // return. The fields a kind does not use stay empty.
 struct AchAddenda {
     kind: i64,
+    form: i64,
     text: const u8[:],
     change_code: const u8[:],
     return_code: const u8[:],
@@ -77,6 +78,26 @@ struct AchAddenda {
     death_month: i32,
     death_day: i32,
     death_year: i32,
+    // the dishonored and contested forms of addenda 99
+    date_returned: const u8[:],
+    original_settlement: i32,
+    return_settlement: i32,
+    return_reason: const u8[:],
+    return_trace: const u8[:],
+    dishonored_trace: const u8[:],
+    dishonored_settlement: i32,
+    dishonored_reason: const u8[:],
+    // the terminal record of a SHR entry
+    ref_one: const u8[:],
+    ref_two: const u8[:],
+    terminal_id: const u8[:],
+    serial: const u8[:],
+    date_month: i32,
+    date_day: i32,
+    auth_code: const u8[:],
+    location: const u8[:],
+    city: const u8[:],
+    state: const u8[:],
 }
 
 // new_ach_file_header gives a file header with the zero values.
@@ -111,11 +132,19 @@ fn new_ach_entry() -> AchEntry {
 }
 
 // new_ach_addenda gives an addenda of kind 5 with the zero values.
+// The form holds 0 for the plain return, 1 for the dishonored return
+// and 2 for the contested return.
 fn new_ach_addenda() -> AchAddenda {
     return AchAddenda {
-        kind: 5, text: "", change_code: "", return_code: "",
+        kind: 5, form: 0, text: "", change_code: "", return_code: "",
         original_trace: "", original_dfi: "", corrected_data: "",
         addenda_information: "", death_month: 0, death_day: 0,
         death_year: 0,
+        date_returned: "", original_settlement: 0, return_settlement: 0,
+        return_reason: "", return_trace: "", dishonored_trace: "",
+        dishonored_settlement: 0, dishonored_reason: "",
+        ref_one: "", ref_two: "", terminal_id: "", serial: "",
+        date_month: 0, date_day: 0, auth_code: "", location: "",
+        city: "", state: "",
     };
 }

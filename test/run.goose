@@ -787,6 +787,12 @@ fn main() {
     test_iat_returns();
     test_iat_refusals();
     test_iat_mixed();
+    test_sec_round_trips();
+    test_sec_returns();
+    test_sec_shr();
+    test_sec_refusals();
+    test_sec_bad_return_codes();
+    test_sec_mixed();
     print("ok");
 }
 
@@ -2740,4 +2746,445 @@ fn test_pacs008_security() {
 <Cdtr><Nm>C</Nm></Cdtr></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>
 """;
     assert(pacs_read(mixed_sum, false, true, lim) == payment_file::F_TOTAL);
+}
+
+// sec_build writes a file with one batch of the SEC code and one
+// entry. The entry holds the transaction code, the amount and the
+// service class of the batch. It holds the card fields of a SHR
+// entry. The kind and the form pick the addenda of the entry. The
+// kind 0 means that the entry holds no addenda.
+fn sec_build(sec: const u8[:], tc: i64, amount: i64, svc: i64,
+             disc: const u8[:], id_text: const u8[:], name: const u8[:],
+             state: const u8[:], a_kind: i64, a_form: i64, out: u8[>..]&) -> i32 {
+    var entries: payment_file::AchEntry[>..] = [];
+    var addenda: payment_file::AchAddenda[>..] = [];
+    var e = payment_file::new_ach_entry();
+    e.transaction_code = tc;
+    e.rdfi_routing = "121140399";
+    e.account = "00012345678";
+    e.amount = amount;
+    e.individual_id = id_text;
+    e.individual_name = name;
+    e.discretionary = disc;
+    e.trace_number = "121140390000001";
+    e.addenda_count = 0;
+    if a_kind != 0 {
+        e.addenda_count = 1;
+        e.addenda_start = 0;
+        var a = payment_file::new_ach_addenda();
+        a.kind = a_kind;
+        a.form = a_form;
+        if a_kind == 5 {
+            a.text = "Payment for invoice 12";
+        }
+        if a_kind == 98 {
+            a.change_code = "C01";
+            a.original_trace = "121140390000001";
+            a.original_dfi = "12114039";
+            a.corrected_data = "A";
+        }
+        if a_kind == 2 {
+            a.ref_one = "REF";
+            a.ref_two = "AB";
+            a.terminal_id = "TERM01";
+            a.serial = "000001";
+            a.date_month = 11;
+            a.date_day = 9;
+            a.auth_code = "AUTH01";
+            a.location = "1 Main St";
+            a.city = "New York";
+            a.state = state;
+        }
+        if a_kind == 99 {
+            a.original_trace = "121140390000001";
+            a.original_dfi = "12114039";
+            if a_form == 1 {
+                a.return_code = "R61";
+                a.return_trace = "121140390000002";
+                a.return_settlement = 100;
+                a.return_reason = "01";
+                a.addenda_information = "info";
+            }
+            if a_form == 2 {
+                a.return_code = "R71";
+                a.date_returned = "260102";
+                a.original_settlement = 100;
+                a.return_trace = "121140390000002";
+                a.return_settlement = 101;
+                a.return_reason = "01";
+                a.dishonored_trace = "121140390000003";
+                a.dishonored_settlement = 102;
+                a.dishonored_reason = "61";
+            }
+        }
+        addenda.push(a);
+    }
+    entries.push(e);
+    var batches: payment_file::AchBatch[>..] = [];
+    var b = payment_file::new_ach_batch();
+    b.service_class = svc;
+    b.company_name = "Acme Corp";
+    b.company_id = "1234567890";
+    b.sec_code = sec;
+    b.description = "PAY";
+    b.effective_year = 2026; b.effective_month = 11; b.effective_day = 10;
+    b.odfi_id = "12114039";
+    b.batch_number = 1;
+    b.entry_start = 0;
+    b.entry_count = 1;
+    batches.push(b);
+    var h = payment_file::new_ach_file_header();
+    h.destination_routing = "121140399";
+    h.origin_id = "1234567890";
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    h.creation_hour = 14; h.creation_minute = 30;
+    h.id_modifier = "A";
+    h.destination_name = "Bank";
+    h.origin_name = "Corp";
+    var lim = payment_file::default_limits();
+    return payment_file::write_ach(h, batches, entries, addenda, lim, out).kind;
+}
+
+// sec_parse reads a file back and gives the fault of the reader.
+// The buffer is a reference, so the fields of the records may point
+// into it for the whole round trip.
+fn sec_parse(out: u8[>..]&, bs: payment_file::AchBatch[>..]&,
+             es: payment_file::AchEntry[>..]&,
+             ads: payment_file::AchAddenda[>..]&) -> i32 {
+    var h = payment_file::new_ach_file_header();
+    var lim = payment_file::default_limits();
+    var opts = payment_file::new_ach_options();
+    return payment_file::parse_ach(out, opts, lim, h, bs, es, ads).kind;
+}
+
+// sec_round_trip writes a batch of the SEC code and reads it back.
+// It checks the fields that the entry holds.
+fn sec_round_trip(sec: const u8[:], tc: i64, amount: i64, svc: i64,
+                  disc: const u8[:], id_text: const u8[:], name: const u8[:],
+                  a_kind: i64, a_form: i64) -> bool {
+    var out: u8[>..] = [];
+    if sec_build(sec, tc, amount, svc, disc, id_text, name, "NY", a_kind, a_form, out)
+       != payment_file::F_NONE {
+        return false;
+    }
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    if sec_parse(out, bs, es, ads) != payment_file::F_NONE { return false; }
+    if bs.len != 1 || es.len != 1 { return false; }
+    if bs[0].sec_code != sec { return false; }
+    if es[0].transaction_code != tc { return false; }
+    if es[0].amount != amount { return false; }
+    if es[0].individual_name != name { return false; }
+    if disc.len > 0 && es[0].discretionary != disc { return false; }
+    if id_text.len > 0 && es[0].individual_id != id_text { return false; }
+    if a_kind == 0 && ads.len != 0 { return false; }
+    if a_kind != 0 && ads.len != 1 { return false; }
+    return true;
+}
+
+fn test_sec_round_trips() {
+    // ACK holds a zero dollar remittance credit prenote and one
+    // addendum.
+    assert(sec_round_trip("ACK", 23, 0, 220, "", "", "A", 5, 0));
+    // ATX holds the count of its addenda in the individual name.
+    assert(sec_round_trip("ATX", 23, 0, 220, "", "", "0001Receiver", 5, 0));
+    // CIE holds credits only.
+    assert(sec_round_trip("CIE", 22, 100, 220, "", "", "A", 5, 0));
+    // COR holds a notice of change.
+    assert(sec_round_trip("COR", 21, 0, 220, "", "", "A", 98, 0));
+    // DNE holds one addendum.
+    assert(sec_round_trip("DNE", 23, 0, 220, "", "", "A", 5, 0));
+    // ENR holds one addendum.
+    assert(sec_round_trip("ENR", 23, 0, 220, "", "", "A", 5, 0));
+    // SHR holds the card fields and the terminal record.
+    assert(sec_round_trip("SHR", 22, 100, 220, "21", "12280000000001", "A", 2, 0));
+    // TRC holds debits only and no addendum.
+    assert(sec_round_trip("TRC", 27, 100, 225, "", "", "A", 0, 0));
+    // TRX holds the count of its addenda in the individual name.
+    assert(sec_round_trip("TRX", 27, 100, 225, "", "", "0001Receiver", 5, 0));
+    // XCK holds debits only and no addendum.
+    assert(sec_round_trip("XCK", 27, 100, 225, "", "", "A", 0, 0));
+}
+
+fn test_sec_returns() {
+    // The dishonored form of the return rides on a normal entry.
+    var out: u8[>..] = [];
+    assert(sec_build("PPD", 27, 100, 225, "", "", "A", "NY", 99, 1, out)
+           == payment_file::F_NONE);
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(out, bs, es, ads) == payment_file::F_NONE);
+    assert(ads.len == 1);
+    assert(ads[0].kind == 99 && ads[0].form == 1);
+    assert(ads[0].return_code == "R61");
+    assert(ads[0].original_trace == "121140390000001");
+    assert(ads[0].original_dfi == "12114039");
+    assert(ads[0].return_trace == "121140390000002");
+    assert(ads[0].return_settlement == 100);
+    assert(ads[0].return_reason == "01");
+    assert(ads[0].addenda_information == "info");
+    // The contested form of the return rides on a normal entry.
+    var out2: u8[>..] = [];
+    assert(sec_build("PPD", 27, 100, 225, "", "", "A", "NY", 99, 2, out2)
+           == payment_file::F_NONE);
+    var bs2: payment_file::AchBatch[>..] = [];
+    var es2: payment_file::AchEntry[>..] = [];
+    var ads2: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(out2, bs2, es2, ads2) == payment_file::F_NONE);
+    assert(ads2.len == 1);
+    assert(ads2[0].kind == 99 && ads2[0].form == 2);
+    assert(ads2[0].return_code == "R71");
+    assert(ads2[0].date_returned == "260102");
+    assert(ads2[0].original_settlement == 100);
+    assert(ads2[0].return_trace == "121140390000002");
+    assert(ads2[0].return_settlement == 101);
+    assert(ads2[0].return_reason == "01");
+    assert(ads2[0].dishonored_trace == "121140390000003");
+    assert(ads2[0].dishonored_settlement == 102);
+    assert(ads2[0].dishonored_reason == "61");
+}
+
+fn test_sec_shr() {
+    var out: u8[>..] = [];
+    assert(sec_build("SHR", 22, 100, 220, "21", "12280000000001", "A", "NY", 2, 0, out)
+           == payment_file::F_NONE);
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(out, bs, es, ads) == payment_file::F_NONE);
+    assert(ads.len == 1);
+    assert(ads[0].kind == 2);
+    assert(ads[0].ref_one == "REF");
+    assert(ads[0].ref_two == "AB");
+    assert(ads[0].terminal_id == "TERM01");
+    assert(ads[0].serial == "000001");
+    assert(ads[0].date_month == 11 && ads[0].date_day == 9);
+    assert(ads[0].auth_code == "AUTH01");
+    assert(ads[0].location == "1 Main St");
+    assert(ads[0].city == "New York");
+    assert(ads[0].state == "NY");
+    assert(es[0].discretionary == "21");
+    assert(es[0].individual_id == "12280000000001");
+
+    // A terminal record whose trace number differs from the entry is a fault.
+    var i: i64 = 1;
+    while i + 94 < out.len {
+        if out[i - 1] == '\n' && out[i] == '7' && out[i + 1] == '0' && out[i + 2] == '2' {
+            var k: i64 = 79;
+            while k < 94 { out[i + k] = 'X'; k += 1; }
+            break;
+        }
+        i += 1;
+    }
+    var bs2: payment_file::AchBatch[>..] = [];
+    var es2: payment_file::AchEntry[>..] = [];
+    var ads2: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(out, bs2, es2, ads2) == payment_file::F_TOTAL);
+}
+
+fn test_sec_refusals() {
+    var out: u8[>..] = [];
+    // A COR entry carries an addenda 98.
+    assert(sec_build("COR", 21, 0, 220, "", "", "A", "NY", 0, 0, out)
+           == payment_file::F_LIMIT);
+    // An XCK entry holds at most 2500.00.
+    assert(sec_build("XCK", 27, 250001, 225, "", "", "A", "NY", 0, 0, out)
+           == payment_file::F_AMOUNT);
+    assert(sec_build("XCK", 27, 250000, 225, "", "", "A", "NY", 0, 0, out)
+           == payment_file::F_NONE);
+    // The count of the addenda of an ATX entry must match.
+    assert(sec_build("ATX", 23, 0, 220, "", "", "0002Receiver", "NY", 5, 0, out)
+           == payment_file::F_TOTAL);
+    // A DNE entry carries one addendum.
+    assert(sec_build("DNE", 23, 0, 220, "", "", "A", "NY", 0, 0, out)
+           == payment_file::F_LIMIT);
+    // A DNE entry holds the code 23 or 33 only.
+    assert(sec_build("DNE", 22, 0, 220, "", "", "A", "NY", 5, 0, out)
+           == payment_file::F_SYNTAX);
+    // A COR entry holds the code 21 or 31 only.
+    assert(sec_build("COR", 22, 0, 220, "", "", "A", "NY", 98, 0, out)
+           == payment_file::F_SYNTAX);
+    // An ACK entry holds the code 23 or 33 only.
+    assert(sec_build("ACK", 22, 0, 220, "", "", "A", "NY", 5, 0, out)
+           == payment_file::F_SYNTAX);
+    // A CIE entry holds a credit code only.
+    assert(sec_build("CIE", 27, 100, 220, "", "", "A", "NY", 5, 0, out)
+           == payment_file::F_TOTAL);
+    // A TRC batch of credits only holds no debit.
+    assert(sec_build("TRC", 27, 100, 220, "", "", "A", "NY", 0, 0, out)
+           == payment_file::F_TOTAL);
+    // A TRC batch of debits only holds no credit.
+    assert(sec_build("TRC", 22, 100, 225, "", "", "A", "NY", 0, 0, out)
+           == payment_file::F_TOTAL);
+    // The card transaction type of a SHR entry is in the card list.
+    assert(sec_build("SHR", 22, 100, 220, "44", "12280000000001", "A", "NY", 0, 0, out)
+           == payment_file::F_SYNTAX);
+    // The card expiration month of a SHR entry is 01 to 12.
+    assert(sec_build("SHR", 22, 100, 220, "21", "13280000000001", "A", "NY", 0, 0, out)
+           == payment_file::F_DATE);
+    // The card expiration year of a SHR entry is 18 to 50.
+    assert(sec_build("SHR", 22, 100, 220, "21", "12170000000001", "A", "NY", 0, 0, out)
+           == payment_file::F_DATE);
+    // The terminal state of a SHR entry is a state of the United
+    // States.
+    assert(sec_build("SHR", 22, 100, 220, "21", "12280000000001", "A", "ZZ", 2, 0, out)
+           == payment_file::F_SYNTAX);
+    // The terminal record rides on a SHR entry only.
+    assert(sec_build("PPD", 27, 100, 225, "", "", "A", "NY", 2, 0, out)
+           == payment_file::F_LIMIT);
+    // The plain form of the return takes no dishonored or contested
+    // code.
+    assert(sec_bad_code(out, 0, "R71") == payment_file::F_SYNTAX);
+    assert(sec_bad_code(out, 0, "R61") == payment_file::F_SYNTAX);
+    assert(sec_bad_code(out, 0, "R01") == payment_file::F_NONE);
+}
+
+
+fn test_sec_bad_return_codes() {
+    var out: u8[>..] = [];
+    // The dishonored list holds R61, R62 and R67 to R70.
+    assert(sec_bad_code(out, 1, "R71") == payment_file::F_SYNTAX);
+    assert(sec_bad_code(out, 1, "R01") == payment_file::F_SYNTAX);
+    // The contested list holds R71 to R77.
+    assert(sec_bad_code(out, 2, "R70") == payment_file::F_SYNTAX);
+    assert(sec_bad_code(out, 2, "R61") == payment_file::F_SYNTAX);
+    // A code of the lists is valid.
+    assert(sec_bad_code(out, 1, "R61") == payment_file::F_NONE);
+    assert(sec_bad_code(out, 2, "R71") == payment_file::F_NONE);
+}
+
+// sec_bad_code writes a file with a return addenda of the form and
+// the code. The form 1 is the dishonored form and the form 2 the
+// contested form.
+fn sec_bad_code(out: u8[>..]&, form: i64, code: const u8[:]) -> i32 {
+    var entries: payment_file::AchEntry[>..] = [];
+    var addenda: payment_file::AchAddenda[>..] = [];
+    var e = payment_file::new_ach_entry();
+    e.transaction_code = 27;
+    e.rdfi_routing = "121140399";
+    e.account = "00012345678";
+    e.amount = 100;
+    e.individual_name = "A";
+    e.trace_number = "121140390000001";
+    e.addenda_count = 1;
+    e.addenda_start = 0;
+    entries.push(e);
+    var a = payment_file::new_ach_addenda();
+    a.kind = 99;
+    a.form = form;
+    a.return_code = code;
+    a.original_trace = "121140390000001";
+    a.original_dfi = "12114039";
+    if form == 0 {
+        a.addenda_information = "info";
+    }
+    if form == 1 {
+        a.return_trace = "121140390000002";
+        a.return_settlement = 100;
+        a.return_reason = "01";
+        a.addenda_information = "info";
+    }
+    if form == 2 {
+        a.date_returned = "260102";
+        a.original_settlement = 100;
+        a.return_trace = "121140390000002";
+        a.return_settlement = 101;
+        a.return_reason = "01";
+        a.dishonored_trace = "121140390000003";
+        a.dishonored_settlement = 102;
+        a.dishonored_reason = "61";
+    }
+    addenda.push(a);
+    var batches: payment_file::AchBatch[>..] = [];
+    var b = payment_file::new_ach_batch();
+    b.service_class = 225;
+    b.company_name = "Acme Corp";
+    b.company_id = "1234567890";
+    b.sec_code = "PPD";
+    b.description = "PAY";
+    b.effective_year = 2026; b.effective_month = 11; b.effective_day = 10;
+    b.odfi_id = "12114039";
+    b.batch_number = 1;
+    b.entry_start = 0;
+    b.entry_count = 1;
+    batches.push(b);
+    var h = payment_file::new_ach_file_header();
+    h.destination_routing = "121140399";
+    h.origin_id = "1234567890";
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    h.creation_hour = 14; h.creation_minute = 30;
+    h.id_modifier = "A";
+    h.destination_name = "Bank";
+    h.origin_name = "Corp";
+    var lim = payment_file::default_limits();
+    return payment_file::write_ach(h, batches, entries, addenda, lim, out).kind;
+}
+
+fn test_sec_mixed() {
+    // A file holds a PPD batch and a TRC batch.
+    var entries: payment_file::AchEntry[>..] = [];
+    var addenda: payment_file::AchAddenda[>..] = [];
+    var e1 = payment_file::new_ach_entry();
+    e1.transaction_code = 22;
+    e1.rdfi_routing = "121140399";
+    e1.account = "00012345678";
+    e1.amount = 10000;
+    e1.individual_name = "Alice Doe";
+    e1.trace_number = "121140390000001";
+    entries.push(e1);
+    var e2 = payment_file::new_ach_entry();
+    e2.transaction_code = 27;
+    e2.rdfi_routing = "121140399";
+    e2.account = "00012345678";
+    e2.amount = 500;
+    e2.individual_name = "Bob Roe";
+    e2.trace_number = "121140390000002";
+    entries.push(e2);
+    var batches: payment_file::AchBatch[>..] = [];
+    var b1 = payment_file::new_ach_batch();
+    b1.service_class = 220;
+    b1.company_name = "Acme Corp";
+    b1.company_id = "1234567890";
+    b1.sec_code = "PPD";
+    b1.description = "PAYROLL";
+    b1.effective_year = 2026; b1.effective_month = 11; b1.effective_day = 10;
+    b1.odfi_id = "12114039";
+    b1.batch_number = 1;
+    b1.entry_start = 0;
+    b1.entry_count = 1;
+    batches.push(b1);
+    var b2 = payment_file::new_ach_batch();
+    b2.service_class = 225;
+    b2.company_name = "Acme Corp";
+    b2.company_id = "1234567890";
+    b2.sec_code = "TRC";
+    b2.description = "PAY";
+    b2.effective_year = 2026; b2.effective_month = 11; b2.effective_day = 10;
+    b2.odfi_id = "12114039";
+    b2.batch_number = 2;
+    b2.entry_start = 1;
+    b2.entry_count = 1;
+    batches.push(b2);
+    var h = payment_file::new_ach_file_header();
+    h.destination_routing = "121140399";
+    h.origin_id = "1234567890";
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    h.creation_hour = 14; h.creation_minute = 30;
+    h.id_modifier = "A";
+    h.destination_name = "Bank";
+    h.origin_name = "Corp";
+    var lim = payment_file::default_limits();
+    var out: u8[>..] = [];
+    assert(payment_file::write_ach(h, batches, entries, addenda, lim, out).kind
+           == payment_file::F_NONE);
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(out, bs, es, ads) == payment_file::F_NONE);
+    assert(bs.len == 2);
+    assert(bs[0].sec_code == "PPD" && bs[1].sec_code == "TRC");
+    assert(es.len == 2);
+    assert(es[0].amount == 10000 && es[1].amount == 500);
 }

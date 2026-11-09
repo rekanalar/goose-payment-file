@@ -60,7 +60,8 @@ fn routing_ok(routing: const u8[:]) -> bool {
 fn sec_ok(code: const u8[:]) -> bool {
     if code == "PPD" || code == "CCD" || code == "WEB" || code == "TEL" { return true; }
     if code == "CTX" || code == "ARC" || code == "BOC" || code == "POP" || code == "RCK" { return true; }
-    return false;
+    if code == "ACK" || code == "ATX" || code == "CIE" || code == "COR" || code == "DNE" { return true; }
+    return code == "ENR" || code == "SHR" || code == "TRC" || code == "TRX" || code == "XCK";
 }
 
 // service_class_ok tells whether the service class is one of the
@@ -232,11 +233,14 @@ fn is_reversal(description: const u8[:]) -> bool {
 }
 
 // sec_addenda_max gives the most addenda that an entry of the SEC
-// code may hold. PPD, CCD and WEB hold one. CTX holds many. The
-// other codes hold none.
+// code may hold. PPD, CCD and WEB hold one. CTX, ATX and TRX hold
+// many. ACK, CIE, DNE and ENR hold one. The rest hold none. A notice
+// of change, a return or a terminal record stands alone beside this
+// limit.
 fn sec_addenda_max(sec: const u8[:]) -> i64 {
     if sec == "PPD" || sec == "CCD" || sec == "WEB" { return 1; }
-    if sec == "CTX" { return 9999; }
+    if sec == "CTX" || sec == "ATX" || sec == "TRX" { return 9999; }
+    if sec == "ACK" || sec == "CIE" || sec == "DNE" || sec == "ENR" { return 1; }
     return 0;
 }
 
@@ -252,11 +256,66 @@ fn entry_addenda_max(sec: const u8[:], e: AchEntry, addenda: AchAddenda[>..]&) -
     return sec_addenda_max(sec);
 }
 
+// catx_count_fault checks the addenda records count of an ATX or TRX
+// entry. The count stands in the first four columns of the
+// individual name and must equal the count of the addenda 05 records.
+fn catx_count_fault(e: AchEntry, addenda: AchAddenda[>..]&) -> Fault {
+    if e.addenda_count <= 0 { return no_fault(); }
+    if e.addenda_start < 0 || e.addenda_start >= addenda.len { return no_fault(); }
+    if addenda[e.addenda_start].kind != 5 { return no_fault(); }
+    if e.individual_name.len < 4 {
+        return fault(F_LIMIT, 0, 0, "6", "the addenda count of the entry is not 4 columns");
+    }
+    var v: i64 = 0;
+    var i: i64 = 0;
+    while i < 4 {
+        let c = e.individual_name[i];
+        if c < '0' || c > '9' {
+            return fault(F_SYNTAX, 0, 0, "6", "the addenda count of the entry holds a byte that is no digit");
+        }
+        v = v * 10 + (c - '0') as i64;
+        i += 1;
+    }
+    if v != e.addenda_count as i64 {
+        return fault(F_TOTAL, 0, 0, "6", "the addenda count of the entry does not match the records");
+    }
+    return no_fault();
+}
+
+// card_expiry_fault checks the card expiration date of a SHR entry.
+// The date holds MMYY in the first four columns of the entry id. The
+// month is 01 to 12 and the year is 18 to 50.
+fn card_expiry_fault(id: const u8[:]) -> Fault {
+    if id.len < 4 {
+        return fault(F_LIMIT, 0, 0, "6", "the card expiration date of the entry is not 4 columns");
+    }
+    var i: i64 = 0;
+    while i < 4 {
+        let c = id[i];
+        if c < '0' || c > '9' {
+            return fault(F_SYNTAX, 0, 0, "6", "the card expiration date holds a byte that is no digit");
+        }
+        i += 1;
+    }
+    let month = (id[0] - '0') as i64 * 10 + (id[1] - '0') as i64;
+    let year = (id[2] - '0') as i64 * 10 + (id[3] - '0') as i64;
+    if month < 1 || month > 12 {
+        return fault(F_DATE, 0, 0, "6", "the card expiration month is not 01 to 12");
+    }
+    if year < 18 || year > 50 {
+        return fault(F_DATE, 0, 0, "6", "the card expiration year is not 18 to 50");
+    }
+    return no_fault();
+}
+
 // sec_entry_fault applies the rules of the SEC code to one entry.
 // TEL, ARC, BOC, POP and RCK hold debits only, and a reversal batch
 // holds credits only. ARC holds at most 25000.00 and RCK at most
-// 2500.00 per entry.
-fn sec_entry_fault(sec: const u8[:], reversal: bool, code: i64, amount: i64) -> Fault {
+// 2500.00 per entry. The new codes take the service class and the
+// addenda of the entry: ACK, ATX, CIE, COR, DNE, ENR, SHR, TRC, TRX
+// and XCK.
+fn sec_entry_fault(sec: const u8[:], reversal: bool, code: i64, amount: i64,
+                   service_class: i64, e: AchEntry) -> Fault {
     let debit_only = sec == "TEL" || sec == "ARC" || sec == "BOC" || sec == "POP" || sec == "RCK";
     if debit_only {
         if !reversal && ach_credit_code(code) {
@@ -272,9 +331,99 @@ fn sec_entry_fault(sec: const u8[:], reversal: bool, code: i64, amount: i64) -> 
     if sec == "RCK" && amount > 250000 {
         return fault(F_AMOUNT, 0, 0, "6", "an RCK entry holds at most 2500.00");
     }
+    // ACK: zero dollar remittance credit prenotes only.
+    if sec == "ACK" {
+        if code != 23 && code != 33 {
+            return fault(F_SYNTAX, 0, 0, "6", "an ACK entry holds the code 23 or 33 only");
+        }
+    }
+    // ATX: prenote credits and the credit of a return or notice.
+    if sec == "ATX" {
+        if code != 23 && code != 33 && code != 21 {
+            return fault(F_SYNTAX, 0, 0, "6", "an ATX entry holds the code 23, 33 or 21 only");
+        }
+    }
+    // CIE: credits only.
+    if sec == "CIE" && !ach_credit_code(code) {
+        return fault(F_TOTAL, 0, 0, "6", "a CIE entry holds a credit code only");
+    }
+    // COR: returns and notices only.
+    if sec == "COR" {
+        if code != 21 && code != 31 {
+            return fault(F_SYNTAX, 0, 0, "6", "a COR entry holds the code 21 or 31 only");
+        }
+    }
+    // DNE and ENR: the codes of the record.
+    if sec == "DNE" {
+        if code != 23 && code != 33 {
+            return fault(F_SYNTAX, 0, 0, "6", "a DNE entry holds the code 23 or 33 only");
+        }
+    }
+    if sec == "ENR" {
+        if code != 23 && code != 33 && code != 21 && code != 31 {
+            return fault(F_SYNTAX, 0, 0, "6", "an ENR entry holds the code 23, 33, 21 or 31 only");
+        }
+    }
+    // SHR: the card transaction type and the card expiration date.
+    if sec == "SHR" {
+        if !card_type_ok(e.discretionary) {
+            return fault(F_SYNTAX, 0, 0, "6", "the card transaction type is not in the card list");
+        }
+        let xf = card_expiry_fault(e.individual_id);
+        if xf.kind != F_NONE { return xf; }
+    }
+    // TRC, TRX and XCK: a batch of credits only takes credits, every
+    // other batch takes debits.
+    if sec == "TRC" || sec == "TRX" || sec == "XCK" {
+        if service_class == 220 && !reversal {
+            if ach_debit_code(code) {
+                return fault(F_TOTAL, 0, 0, "6", "a batch of credits only holds a debit");
+            }
+        } else {
+            if ach_credit_code(code) {
+                return fault(F_TOTAL, 0, 0, "6", "this SEC code holds debits only");
+            }
+        }
+    }
+    if sec == "XCK" && amount > 250000 {
+        return fault(F_AMOUNT, 0, 0, "6", "an XCK entry holds at most 2500.00");
+    }
     return no_fault();
 }
 
+// sec_entry_addenda_fault applies the rules of the SEC code that
+// need the addenda of the entry: the addenda 98 of a COR entry, the
+// one addenda 05 of DNE and ENR, and the addenda count of ATX and
+// TRX.
+fn sec_entry_addenda_fault(sec: const u8[:], e: AchEntry, addenda: AchAddenda[>..]&) -> Fault {
+    if e.addenda_count > 0 && e.addenda_start >= 0 && e.addenda_start < addenda.len
+       && addenda[e.addenda_start].kind == 2 && sec != "SHR" {
+        return fault(F_LIMIT, 0, 0, "7", "a terminal record rides on a SHR entry only");
+    }
+    if sec == "COR" {
+        if e.addenda_count < 1 || e.addenda_start < 0 || e.addenda_start >= addenda.len
+           || addenda[e.addenda_start].kind != 98 {
+            return fault(F_LIMIT, 0, 0, "7", "a COR entry carries an addenda 98");
+        }
+    }
+    if sec == "DNE" || sec == "ENR" {
+        if e.addenda_count == 0 {
+            if sec == "DNE" {
+                return fault(F_LIMIT, 0, 0, "7", "a DNE entry carries one addenda 05");
+            }
+            return fault(F_LIMIT, 0, 0, "7", "an ENR entry carries one addenda 05");
+        }
+        if e.addenda_start >= 0 && e.addenda_start < addenda.len
+           && addenda[e.addenda_start].kind == 5 && e.addenda_count != 1 {
+            return fault(F_LIMIT, 0, 0, "7", "this SEC code entry carries exactly one addenda 05");
+        }
+    }
+    if sec == "ATX" || sec == "TRX" {
+        let cf = catx_count_fault(e, addenda);
+        if cf.kind != F_NONE { return cf; }
+    }
+    return no_fault();
+}
 // trace_after tells whether trace number a sorts after trace number b.
 // Both hold 15 digits, so a byte compare gives the order.
 fn trace_after(a: const u8[:], b: const u8[:]) -> bool {
@@ -302,14 +451,16 @@ fn service_class_fault(service_class: i64, code: i64) -> Fault {
 // check_entry checks one entry before any byte goes out: the code,
 // the routing number, the amount, the trace number and the ranges.
 fn check_entry(e: AchEntry, odfi_id: const u8[:], service_class: i64, sec: const u8[:],
-               reversal: bool, add_max: i64) -> Fault {
+               reversal: bool, add_max: i64, addenda: AchAddenda[>..]&) -> Fault {
     if !ach_code_ok(e.transaction_code) {
         return fault(F_SYNTAX, 0, 0, "6", "the transaction code is not in the NACHA set");
     }
     let df = service_class_fault(service_class, e.transaction_code);
     if df.kind != F_NONE { return df; }
-    let sf = sec_entry_fault(sec, reversal, e.transaction_code, e.amount);
+    let sf = sec_entry_fault(sec, reversal, e.transaction_code, e.amount, service_class, e);
     if sf.kind != F_NONE { return sf; }
+    let af = sec_entry_addenda_fault(sec, e, addenda);
+    if af.kind != F_NONE { return af; }
     if e.addenda_count as i64 > add_max {
         return fault(F_LIMIT, 0, 0, "7", "the entry holds more addenda than its SEC code allows");
     }
@@ -468,26 +619,58 @@ fn check_ach_addenda(a: AchAddenda) -> Fault {
     if a.kind == 5 {
         return check_ach_text(a.text, 80, "7");
     }
+    if a.kind == 2 {
+        let f = check_ach_text(a.ref_one, 7, "7");
+        if f.kind != F_NONE { return f; }
+        let f2 = check_ach_text(a.ref_two, 3, "7");
+        if f2.kind != F_NONE { return f2; }
+        let f3 = check_ach_text(a.terminal_id, 6, "7");
+        if f3.kind != F_NONE { return f3; }
+        let f4 = check_ach_text(a.serial, 6, "7");
+        if f4.kind != F_NONE { return f4; }
+        if a.date_month < 1 || a.date_month > 12 || a.date_day < 1 || a.date_day > 31 {
+            return fault(F_DATE, 0, 0, "7", "the transaction date of the terminal record is not a civil day");
+        }
+        let f5 = check_ach_text(a.auth_code, 6, "7");
+        if f5.kind != F_NONE { return f5; }
+        let f6 = check_ach_text(a.location, 27, "7");
+        if f6.kind != F_NONE { return f6; }
+        let f7 = check_ach_text(a.city, 15, "7");
+        if f7.kind != F_NONE { return f7; }
+        if !us_state_ok(a.state) {
+            return fault(F_SYNTAX, 0, 0, "7", "the terminal state is not a state or territory of the United States");
+        }
+        return no_fault();
+    }
     if a.kind == 98 {
         if !noc_code_ok(a.change_code) {
             return fault(F_SYNTAX, 0, 0, "7", "the change code is not in the notice list");
         }
-        if a.original_trace.len != 15 || !digits_ok(a.original_trace) {
+        if !digits_width(a.original_trace, 15) {
             return fault(F_SYNTAX, 0, 0, "7", "the original trace number is not 15 digits");
         }
-        if a.original_dfi.len != 8 || !digits_ok(a.original_dfi) {
+        if !digits_width(a.original_dfi, 8) {
             return fault(F_SYNTAX, 0, 0, "7", "the original DFI number is not 8 digits");
         }
         return check_ach_text(a.corrected_data, 29, "7");
     }
     if a.kind == 99 {
+        if a.form == 1 {
+            return check_ach_dishonored(a);
+        }
+        if a.form == 2 {
+            return check_ach_contested(a);
+        }
+        if dishonor_code_ok(a.return_code) || contest_code_ok(a.return_code) {
+            return fault(F_SYNTAX, 0, 0, "7", "this return code needs the dishonored or the contested form");
+        }
         if !return_code_ok(a.return_code) {
             return fault(F_SYNTAX, 0, 0, "7", "the return code is not in the return reason list");
         }
-        if a.original_trace.len != 15 || !digits_ok(a.original_trace) {
+        if !digits_width(a.original_trace, 15) {
             return fault(F_SYNTAX, 0, 0, "7", "the original trace number is not 15 digits");
         }
-        if a.original_dfi.len != 8 || !digits_ok(a.original_dfi) {
+        if !digits_width(a.original_dfi, 8) {
             return fault(F_SYNTAX, 0, 0, "7", "the original DFI number is not 8 digits");
         }
         if a.death_month > 0 || a.death_day > 0 || a.death_year > 0 {
@@ -498,15 +681,113 @@ fn check_ach_addenda(a: AchAddenda) -> Fault {
         }
         return check_ach_text(a.addenda_information, 44, "7");
     }
-    return fault(F_UNKNOWN_TAG, 0, 0, "7", "the addenda kind is not 5, 98 or 99");
+    return fault(F_UNKNOWN_TAG, 0, 0, "7", "the addenda kind is not 2, 5, 98 or 99");
 }
 
-// write_ach_addenda writes record 7. The sequence counts the addenda
-// of one entry from one. The entry sequence is the last seven digits
+// settlement_ok tells whether a number is a day of the year.
+fn settlement_ok(day: i32) -> bool {
+    return day >= 1 && day <= 366;
+}
+
+// check_ach_dishonored checks the dishonored form of addenda 99.
+fn check_ach_dishonored(a: AchAddenda) -> Fault {
+    if !dishonor_code_ok(a.return_code) {
+        return fault(F_SYNTAX, 0, 0, "7", "the dishonored return code is not in the dishonored list");
+    }
+    if !digits_width(a.original_trace, 15) {
+        return fault(F_SYNTAX, 0, 0, "7", "the original trace number is not 15 digits");
+    }
+    if !digits_width(a.original_dfi, 8) {
+        return fault(F_SYNTAX, 0, 0, "7", "the original DFI number is not 8 digits");
+    }
+    if !digits_width(a.return_trace, 15) {
+        return fault(F_SYNTAX, 0, 0, "7", "the return trace number is not 15 digits");
+    }
+    if !settlement_ok(a.return_settlement) {
+        return fault(F_DATE, 0, 0, "7", "the return settlement date is not a day of the year");
+    }
+    if !digits_width(a.return_reason, 2) {
+        return fault(F_SYNTAX, 0, 0, "7", "the return reason code is not two digits");
+    }
+    return check_ach_text(a.addenda_information, 21, "7");
+}
+
+// check_ach_contested checks the contested form of addenda 99.
+fn check_ach_contested(a: AchAddenda) -> Fault {
+    if !contest_code_ok(a.return_code) {
+        return fault(F_SYNTAX, 0, 0, "7", "the contested return code is not in the contested list");
+    }
+    if !digits_width(a.original_trace, 15) {
+        return fault(F_SYNTAX, 0, 0, "7", "the original trace number is not 15 digits");
+    }
+    if !digits_width(a.original_dfi, 8) {
+        return fault(F_SYNTAX, 0, 0, "7", "the original DFI number is not 8 digits");
+    }
+    if !digits_width(a.date_returned, 6) {
+        return fault(F_SYNTAX, 0, 0, "7", "the date of the returned entry is not 6 digits");
+    }
+    let month = (a.date_returned[2] - '0') as i64 * 10 + (a.date_returned[3] - '0') as i64;
+    let day = (a.date_returned[4] - '0') as i64 * 10 + (a.date_returned[5] - '0') as i64;
+    if month < 1 || month > 12 || day < 1 || day > 31 {
+        return fault(F_DATE, 0, 0, "7", "the date of the returned entry is not a civil day");
+    }
+    if !settlement_ok(a.original_settlement) {
+        return fault(F_DATE, 0, 0, "7", "the original settlement date is not a day of the year");
+    }
+    if !settlement_ok(a.return_settlement) {
+        return fault(F_DATE, 0, 0, "7", "the return settlement date is not a day of the year");
+    }
+    if !settlement_ok(a.dishonored_settlement) {
+        return fault(F_DATE, 0, 0, "7", "the dishonored settlement date is not a day of the year");
+    }
+    if !digits_width(a.return_reason, 2) {
+        return fault(F_SYNTAX, 0, 0, "7", "the return reason code is not two digits");
+    }
+    if !digits_width(a.dishonored_reason, 2) {
+        return fault(F_SYNTAX, 0, 0, "7", "the dishonored reason code is not two digits");
+    }
+    if !digits_width(a.return_trace, 15) {
+        return fault(F_SYNTAX, 0, 0, "7", "the return trace number is not 15 digits");
+    }
+    if !digits_width(a.dishonored_trace, 15) {
+        return fault(F_SYNTAX, 0, 0, "7", "the dishonored trace number is not 15 digits");
+    }
+    return no_fault();
+}
+
+// write_ach_addenda writes record 7. The columns mirror the reader
+// in read_ach.goose: the same widths, in the same order. The
+// sequence counts the addenda of one entry from one. The entry sequence is the last seven digits
 // of the trace number of the entry. A notice of change and a return
 // carry their own layouts and no sequence.
 fn write_ach_addenda(out: u8[>..]&, a: AchAddenda, seq: i64, trace_number: const u8[:]) -> Fault {
     out.push('7');
+    if a.kind == 2 {
+        put(out, "02");
+        let f = put_text(out, a.ref_one, 7, "7");
+        if f.kind != F_NONE { return f; }
+        let f2 = put_text(out, a.ref_two, 3, "7");
+        if f2.kind != F_NONE { return f2; }
+        let f3 = put_text(out, a.terminal_id, 6, "7");
+        if f3.kind != F_NONE { return f3; }
+        let f4 = put_text(out, a.serial, 6, "7");
+        if f4.kind != F_NONE { return f4; }
+        let f5 = put_num(out, a.date_month as i64, 2, "7");
+        if f5.kind != F_NONE { return f5; }
+        let f6 = put_num(out, a.date_day as i64, 2, "7");
+        if f6.kind != F_NONE { return f6; }
+        let f7 = put_text(out, a.auth_code, 6, "7");
+        if f7.kind != F_NONE { return f7; }
+        let f8 = put_text(out, a.location, 27, "7");
+        if f8.kind != F_NONE { return f8; }
+        let f9 = put_text(out, a.city, 15, "7");
+        if f9.kind != F_NONE { return f9; }
+        let fa = put_text(out, a.state, 2, "7");
+        if fa.kind != F_NONE { return fa; }
+        let fb = put_text(out, trace_number, 15, "7");
+        if fb.kind != F_NONE { return fb; }
+        return no_fault();
+    }
     if a.kind == 98 {
         put(out, "98");
         let f = put_text(out, a.change_code, 3, "7");
@@ -528,6 +809,51 @@ fn write_ach_addenda(out: u8[>..]&, a: AchAddenda, seq: i64, trace_number: const
         put(out, "99");
         let f = put_text(out, a.return_code, 3, "7");
         if f.kind != F_NONE { return f; }
+        if a.form == 1 {
+            let f1 = put_text(out, a.original_trace, 15, "7");
+            if f1.kind != F_NONE { return f1; }
+            put(out, "      ");
+            let f2 = put_text(out, a.original_dfi, 8, "7");
+            if f2.kind != F_NONE { return f2; }
+            put(out, "   ");
+            let f3 = put_text(out, a.return_trace, 15, "7");
+            if f3.kind != F_NONE { return f3; }
+            let f4 = put_num(out, a.return_settlement as i64, 3, "7");
+            if f4.kind != F_NONE { return f4; }
+            let f5 = put_text(out, a.return_reason, 2, "7");
+            if f5.kind != F_NONE { return f5; }
+            let f6 = put_text(out, a.addenda_information, 21, "7");
+            if f6.kind != F_NONE { return f6; }
+            let f7 = put_text(out, trace_number, 15, "7");
+            if f7.kind != F_NONE { return f7; }
+            return no_fault();
+        }
+        if a.form == 2 {
+            let f1 = put_text(out, a.original_trace, 15, "7");
+            if f1.kind != F_NONE { return f1; }
+            let f2 = put_text(out, a.date_returned, 6, "7");
+            if f2.kind != F_NONE { return f2; }
+            let f3 = put_text(out, a.original_dfi, 8, "7");
+            if f3.kind != F_NONE { return f3; }
+            let f4 = put_num(out, a.original_settlement as i64, 3, "7");
+            if f4.kind != F_NONE { return f4; }
+            let f5 = put_text(out, a.return_trace, 15, "7");
+            if f5.kind != F_NONE { return f5; }
+            let f6 = put_num(out, a.return_settlement as i64, 3, "7");
+            if f6.kind != F_NONE { return f6; }
+            let f7 = put_text(out, a.return_reason, 2, "7");
+            if f7.kind != F_NONE { return f7; }
+            let f8 = put_text(out, a.dishonored_trace, 15, "7");
+            if f8.kind != F_NONE { return f8; }
+            let f9 = put_num(out, a.dishonored_settlement as i64, 3, "7");
+            if f9.kind != F_NONE { return f9; }
+            let fa = put_text(out, a.dishonored_reason, 2, "7");
+            if fa.kind != F_NONE { return fa; }
+            put(out, " ");
+            let fb = put_text(out, trace_number, 15, "7");
+            if fb.kind != F_NONE { return fb; }
+            return no_fault();
+        }
         let f2 = put_text(out, a.original_trace, 15, "7");
         if f2.kind != F_NONE { return f2; }
         if a.death_year > 0 {
@@ -603,7 +929,7 @@ fn write_ach(h: AchFileHeader, batches: AchBatch[>..]&, entries: AchEntry[>..]&,
             }
             cursor += e.addenda_count as i64;
             let add_max = entry_addenda_max(b.sec_code, e, addenda);
-            let ef = check_entry(e, b.odfi_id, b.service_class, b.sec_code, is_reversal(b.description), add_max);
+            let ef = check_entry(e, b.odfi_id, b.service_class, b.sec_code, is_reversal(b.description), add_max, addenda);
             if ef.kind != F_NONE { return ef; }
             if i > b.entry_start && !trace_after(e.trace_number, entries[i - 1].trace_number) {
                 return fault(F_TOTAL, 0, 0, "6", "the trace numbers of the batch do not ascend");

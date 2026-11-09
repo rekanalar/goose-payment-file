@@ -23,7 +23,7 @@ Every parse is one linear pass with no recursion. Every size has a limit.
 Add these lines to the root file of the program that uses it:
 
 ```goose
-import payment_file from "rekanalar/goose-payment-file@v0.5.0";
+import payment_file from "rekanalar/goose-payment-file@v0.6.0";
 import xml from "rekanalar/goose-xml@v2.0.0";
 import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
@@ -58,7 +58,7 @@ the line to add.
 | `AchFileHeader` | record 1: the routing number, the origin id, the creation time, the names |
 | `AchBatch` | records 5 and 8: the service class, the company, the SEC code, the effective date, the entry range |
 | `AchEntry` | record 6: the transaction code, the routing number, the account, the amount in cents, the trace number |
-| `AchAddenda` | record 7: the payment related text, the notice of change and the return |
+| `AchAddenda` | record 7: the payment related text, the terminal record, the notice of change and the three forms of the return |
 | `IatBatch` | record 5 of an IAT batch: the foreign exchange fields, the country, the currencies |
 | `IatEntry` | record 6 of an IAT batch: the transaction code, the account, the screening indicators, the amount |
 | `IatAddenda` | record 7 of an IAT batch: the records of type 02 and 10 to 18 |
@@ -126,17 +126,49 @@ The trace number starts with the ODFI id of its batch. A batch of class 220 hold
 holds debits only. A prenote holds an amount of zero.
 
 Each SEC code has its own rules. PPD, CCD and WEB hold one addendum
-at most. CTX holds many addenda. TEL, ARC, BOC, POP and RCK hold debits
-only and no addendum. A batch with the description `REVERSAL` holds the
-opposite direction.
+at most. CTX, ATX and TRX hold many addenda. TEL, ARC, BOC, POP and
+RCK hold debits only and no addendum. ACK, CIE, DNE and ENR hold one
+addendum. SHR, TRC and XCK hold none.
 
-An ARC entry holds 25000.00 at most. An RCK entry holds 2500.00 at most.
-The trace numbers of a batch ascend.
+A batch with the description `REVERSAL` holds the opposite direction.
 
-The SEC code is PPD, CCD, WEB, TEL, CTX, ARC, BOC, POP, RCK or IAT. The
-transaction codes are the checking, savings, general ledger and loan
-codes. The file holds two digits of the year, so the dates run from
-2000 to 2099.
+An ARC entry holds 25000.00 at most. An RCK entry and an XCK entry
+hold 2500.00 at most. The trace numbers of a batch ascend.
+
+The SEC codes are PPD, CCD, WEB, TEL, CTX, ARC, BOC, POP and RCK. The
+package also takes ACK, ATX, CIE, COR, DNE, ENR, SHR, TRC, TRX, XCK and
+IAT. The transaction codes
+are the checking, savings, general ledger and loan codes. The file
+holds two digits of the year. The dates run from 2000 to 2099.
+
+## The newer SEC codes
+
+Ten codes joined the package beside the ten it already held. They
+share the entry layout of the first ten. Only their rules differ.
+
+ACK holds zero dollar remittance credit prenotes. The transaction code
+is 23 or 33. ATX takes the codes 23, 33 and 21. CIE takes credit codes
+only.
+
+COR takes the return codes 21 and 31 only. Every COR entry carries a
+notice of change. DNE takes 23 or 33. ENR takes 23, 33, 21 and 31.
+DNE and ENR carry exactly one addendum.
+
+TRC, TRX and XCK take their direction from the service class. A batch
+of credits only takes credit entries. Every other batch takes debit
+entries.
+
+ATX and TRX carry the count of their addenda records in the first
+four columns of the individual name. The count must match the records
+that follow the entry. SHR carries a card transaction type in its
+discretionary data. It carries the card expiration date `MMYY` in the
+first four columns of its identification number. The month is `01` to
+`12`. The year is `18` to `50`.
+
+An SHR entry may carry a terminal record of type 02. It holds the
+reference information, the terminal data and the terminal state. The
+state is a postal abbreviation of a state or territory of the United
+States. A terminal record rides on a SHR entry only.
 
 ## The IAT batch
 
@@ -169,8 +201,17 @@ are `R01` to `R47`, `R50` to `R53`, `R61`, `R62`, `R67` to `R77`,
 `R80` to `R85` and `R90`. A return may hold the date of death of the
 receiver.
 
-A notice of change and a return ride on a normal entry. They stand
-alone. The package accepts them on any SEC code.
+The return has two more forms. The dishonored form holds the code
+`R61`, `R62` or `R67` to `R70`. It holds the trace numbers, the
+settlement dates and the reason code of the dishonor.
+
+The contested form holds the code `R71` to `R77`. It holds those fields
+and the date of the returned entry. The plain form takes none of these
+codes. The reader picks the form from the code, as the reference
+library does.
+
+A notice of change, a return or a terminal record rides on a normal
+entry. They stand alone. The package accepts them on any SEC code.
 
 The writer of the IAT batch writes one batch kind per file. The writer
 of the normal batches writes the other batches. The reader takes a file
@@ -239,16 +280,18 @@ sum, so the reader checks the count only.
   such a message.
 - **The `pacs.008` reader refuses a group header with no count.** The
   count is mandatory in the schema.
-- **The NACHA file takes ten SEC codes.** They are PPD, CCD, WEB, TEL,
-  CTX, ARC, BOC, POP, RCK and IAT. The addenda records of type 05, 02,
-  10 to 18, 98 and 99 stay in scope. The records of ADV, ACK, ATX, CIE,
-  COR, DNE, ENR, MTE, SHR, TRC, TRX and XCK stay out. The reader
-  refuses them.
+- **ADV and MTE stay out.** The file takes twenty other SEC codes.
+  ADV and MTE carry an entry layout of their own. The reader refuses
+  them.
 - **The IAT writer writes one batch kind per file.** The IAT writer
   holds IAT batches only. The normal writer holds the other batches.
   A file with both kinds comes from the reader alone.
-- **The contested and dishonored returns stay out.** A type 99 record
-  with such a form reads as a plain return.
+- **A code sets the return form.** An old file can
+  hold such a code in the plain layout. The reader reads it as the
+  other form. Re-write that file with this package.
+- **The SHR entry takes no addendum of type 05.** It takes the
+  terminal record only. The card reference number holds 11 columns
+  beside the expiration date.
 - **A reversal is a batch with the description `REVERSAL`.** The
   package does not check the other reversal rules of NACHA.
 - **The writer needs each batch to hold an entry.** The reader refuses
@@ -312,6 +355,23 @@ NACHA protections beyond the reference library `moov-io/ach`:
   accepts, the reader accepts.
 - **The code lists of the IAT batch are checked.** The reference
   library takes any text.
+- **The newer SEC codes check their codes.** Each SEC code takes the
+  transaction codes of its rule and no others. The contested and the
+  dishonored returns take their own lists.
+- **The card fields of SHR are checked.** The transaction type takes
+  the eight codes of the list. The expiration date takes the month
+  `01` to `12` and the year `18` to `50`. The terminal state takes the
+  postal abbreviations of the states and territories.
+- **The count of the addenda of ATX and TRX must match.** The count
+  stands in the file. The writer and the reader compare it with the
+  records. A hostile count cannot hide or invent records.
+- **The amount cap of XCK holds.** An XCK entry holds 2500.00 at
+  most, as the rule of the code demands.
+- **The terminal record binds to its entry.** The reader refuses a
+  terminal record with another trace number.
+- **The plain return refuses the codes of the two forms.** A plain
+  record with such a code is a fault. The reader would read the file
+  as the other form, so the writer refuses it first.
 
 | List | The values |
 |---|---|
@@ -322,6 +382,10 @@ NACHA protections beyond the reference library `moov-io/ach`:
 | The transaction type codes | the 22 codes of the list |
 | The change codes | the 20 codes of the list |
 | The return codes | the 71 codes of the list |
+| The dishonored return codes | `R61`, `R62`, `R67` to `R70` |
+| The contested return codes | `R71` to `R77` |
+| The card transaction types | `01`, `02`, `03`, `11`, `12`, `13`, `21`, `99` |
+| The terminal states | the 57 postal abbreviations |
 - **The reader checks the records of an IAT entry.** A missing
   mandatory record and a wrong order are faults. The reference library
   reads the records in any order.

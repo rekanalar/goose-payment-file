@@ -116,6 +116,56 @@ fn return_code_ok(s: const u8[:]) -> bool {
     return v == 90;
 }
 
+// dishonor_code_ok tells whether a text is a dishonored return
+// reason code: R61, R62 and R67 to R70.
+fn dishonor_code_ok(s: const u8[:]) -> bool {
+    if s.len != 3 { return false; }
+    if s[0] != 'R' { return false; }
+    if !(s[1] >= '0' && s[1] <= '9') { return false; }
+    if !(s[2] >= '0' && s[2] <= '9') { return false; }
+    let v = (s[1] - '0') as i64 * 10 + (s[2] - '0') as i64;
+    if v == 61 || v == 62 { return true; }
+    if v <= 70 { return v >= 67; }
+    return false;
+}
+
+// contest_code_ok tells whether a text is a contested return reason
+// code: R71 to R77.
+fn contest_code_ok(s: const u8[:]) -> bool {
+    if s.len != 3 { return false; }
+    if s[0] != 'R' { return false; }
+    if !(s[1] >= '0' && s[1] <= '9') { return false; }
+    if !(s[2] >= '0' && s[2] <= '9') { return false; }
+    let v = (s[1] - '0') as i64 * 10 + (s[2] - '0') as i64;
+    return v >= 71 && v <= 77;
+}
+
+// us_state_ok tells whether a text is a postal abbreviation of a
+// state or territory of the United States.
+fn us_state_ok(s: const u8[:]) -> bool {
+    if s.len != 2 { return false; }
+    if s == "AK" || s == "AL" || s == "AR" || s == "AS" || s == "AZ" { return true; }
+    if s == "CA" || s == "CO" || s == "CT" || s == "DC" || s == "DE" { return true; }
+    if s == "FL" || s == "FT" || s == "GA" || s == "GU" || s == "HI" { return true; }
+    if s == "IA" || s == "ID" || s == "IL" || s == "IN" || s == "KS" { return true; }
+    if s == "KY" || s == "LA" || s == "MA" || s == "MD" || s == "ME" { return true; }
+    if s == "MI" || s == "MN" || s == "MO" || s == "MP" || s == "MS" { return true; }
+    if s == "MT" || s == "NC" || s == "ND" || s == "NE" || s == "NH" { return true; }
+    if s == "NJ" || s == "NM" || s == "NV" || s == "NY" || s == "OH" { return true; }
+    if s == "OK" || s == "OR" || s == "PA" || s == "PR" || s == "RI" { return true; }
+    if s == "SC" || s == "SD" || s == "TN" || s == "TX" || s == "UT" { return true; }
+    if s == "VA" || s == "VI" || s == "VT" || s == "WA" || s == "WI" { return true; }
+    return s == "WV" || s == "WY";
+}
+
+// card_type_ok tells whether a text is a card transaction type of a
+// SHR or POS entry.
+fn card_type_ok(s: const u8[:]) -> bool {
+    if s.len != 2 { return false; }
+    return s == "01" || s == "02" || s == "03" || s == "11"
+        || s == "12" || s == "13" || s == "21" || s == "99";
+}
+
 // txn_type_code_ok tells whether a text is a transaction type code of
 // the list of addenda 10.
 fn txn_type_code_ok(s: const u8[:]) -> bool {

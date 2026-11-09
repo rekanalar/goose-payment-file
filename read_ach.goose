@@ -246,8 +246,8 @@ fn parse_ach_entry(rec: const u8[:], line: i64, e: AchEntry&) -> Fault {
     return no_fault();
 }
 
-// parse_ach_addenda reads record 7. The caller checks the sequence
-// and the entry sequence.
+// parse_ach_addenda reads record 7 of type 05. The caller checks the
+// sequence and the entry sequence.
 fn parse_ach_addenda(rec: const u8[:], line: i64, a: AchAddenda&) -> Fault {
     let tc = fld(rec, 2, 3);
     if tc != "05" {
@@ -517,6 +517,50 @@ fn parse_iat_addenda(rec: const u8[:], line: i64, trace_number: const u8[:], a: 
 // is the trace number of the entry.
 fn parse_ach_notice(rec: const u8[:], line: i64, trace_number: const u8[:], a: AchAddenda&) -> Fault {
     let tc = fld(rec, 2, 3);
+    if tc == "02" {
+        a.kind = 2;
+        let r1, f1 = txt_fld(rec, 4, 10, line, "7");
+        if f1.kind != F_NONE { return f1; }
+        a.ref_one = r1;
+        let r2, f2 = txt_fld(rec, 11, 13, line, "7");
+        if f2.kind != F_NONE { return f2; }
+        a.ref_two = r2;
+        let t1, f3 = txt_fld(rec, 14, 19, line, "7");
+        if f3.kind != F_NONE { return f3; }
+        a.terminal_id = t1;
+        let s1, f4 = txt_fld(rec, 20, 25, line, "7");
+        if f4.kind != F_NONE { return f4; }
+        a.serial = s1;
+        let d, f5 = num_fld(rec, 26, 29, line, "7");
+        if f5.kind != F_NONE { return f5; }
+        let mm = d / 100;
+        let dd = d % 100;
+        if mm < 1 || mm > 12 || dd < 1 || dd > 31 {
+            return fault(F_DATE, line, 26, "7", "the transaction date of the terminal record is not a civil day");
+        }
+        a.date_month = mm as i32;
+        a.date_day = dd as i32;
+        let ac, f6 = txt_fld(rec, 30, 35, line, "7");
+        if f6.kind != F_NONE { return f6; }
+        a.auth_code = ac;
+        let loc, f7 = txt_fld(rec, 36, 62, line, "7");
+        if f7.kind != F_NONE { return f7; }
+        a.location = loc;
+        let city, f8 = txt_fld(rec, 63, 77, line, "7");
+        if f8.kind != F_NONE { return f8; }
+        a.city = city;
+        let st, f9 = txt_fld(rec, 78, 79, line, "7");
+        if f9.kind != F_NONE { return f9; }
+        a.state = st;
+        if !us_state_ok(a.state) {
+            return fault(F_SYNTAX, line, 78, "7", "the terminal state is not a state or territory of the United States");
+        }
+        if fld(rec, 80, 94) != trace_number {
+            return fault(F_TOTAL, line, 80, "7", "the trace number of the addenda differs from the entry");
+        }
+        return no_fault();
+    }
+
     let code = fld(rec, 4, 6);
     let otr = fld(rec, 7, 21);
     if !digits_width(otr, 15) {
@@ -540,6 +584,90 @@ fn parse_ach_notice(rec: const u8[:], line: i64, trace_number: const u8[:], a: A
         let cd, f = txt_fld(rec, 36, 64, line, "7");
         if f.kind != F_NONE { return f; }
         a.corrected_data = cd;
+        return no_fault();
+    }
+    // The code picks the form of the return: the dishonored list gives
+    // the dishonored form, the contested list the contested form.
+    if dishonor_code_ok(code) {
+        a.kind = 99;
+        a.form = 1;
+        a.return_code = code;
+        let rt, f1 = txt_fld(rec, 39, 53, line, "7");
+        if f1.kind != F_NONE { return f1; }
+        if !digits_width(rt, 15) {
+            return fault(F_SYNTAX, line, 39, "7", "the return trace number is not 15 digits");
+        }
+        a.return_trace = rt;
+        let rs, f2 = num_fld(rec, 54, 56, line, "7");
+        if f2.kind != F_NONE { return f2; }
+        if rs < 1 || rs > 366 {
+            return fault(F_DATE, line, 54, "7", "the return settlement date is not a day of the year");
+        }
+        a.return_settlement = rs as i32;
+        let rr = fld(rec, 57, 58);
+        if !digits_width(rr, 2) {
+            return fault(F_SYNTAX, line, 57, "7", "the return reason code is not two digits");
+        }
+        a.return_reason = rr;
+        let ai, f3 = txt_fld(rec, 59, 79, line, "7");
+        if f3.kind != F_NONE { return f3; }
+        a.addenda_information = ai;
+        return no_fault();
+    }
+    if contest_code_ok(code) {
+        a.kind = 99;
+        a.form = 2;
+        a.return_code = code;
+        let dr = fld(rec, 22, 27);
+        if !digits_width(dr, 6) {
+            return fault(F_SYNTAX, line, 22, "7", "the date of the returned entry is not 6 digits");
+        }
+        let mm = (dr[2] - '0') as i64 * 10 + (dr[3] - '0') as i64;
+        let dd = (dr[4] - '0') as i64 * 10 + (dr[5] - '0') as i64;
+        if mm < 1 || mm > 12 || dd < 1 || dd > 31 {
+            return fault(F_DATE, line, 22, "7", "the date of the returned entry is not a civil day");
+        }
+        a.date_returned = dr;
+        let os, f1 = num_fld(rec, 36, 38, line, "7");
+        if f1.kind != F_NONE { return f1; }
+        if os < 1 || os > 366 {
+            return fault(F_DATE, line, 36, "7", "the original settlement date is not a day of the year");
+        }
+        a.original_settlement = os as i32;
+        let rt, f2 = txt_fld(rec, 39, 53, line, "7");
+        if f2.kind != F_NONE { return f2; }
+        if !digits_width(rt, 15) {
+            return fault(F_SYNTAX, line, 39, "7", "the return trace number is not 15 digits");
+        }
+        a.return_trace = rt;
+        let rs, f3 = num_fld(rec, 54, 56, line, "7");
+        if f3.kind != F_NONE { return f3; }
+        if rs < 1 || rs > 366 {
+            return fault(F_DATE, line, 54, "7", "the return settlement date is not a day of the year");
+        }
+        a.return_settlement = rs as i32;
+        let rr = fld(rec, 57, 58);
+        if !digits_width(rr, 2) {
+            return fault(F_SYNTAX, line, 57, "7", "the return reason code is not two digits");
+        }
+        a.return_reason = rr;
+        let dt, f4 = txt_fld(rec, 59, 73, line, "7");
+        if f4.kind != F_NONE { return f4; }
+        if !digits_width(dt, 15) {
+            return fault(F_SYNTAX, line, 59, "7", "the dishonored trace number is not 15 digits");
+        }
+        a.dishonored_trace = dt;
+        let ds, f5 = num_fld(rec, 74, 76, line, "7");
+        if f5.kind != F_NONE { return f5; }
+        if ds < 1 || ds > 366 {
+            return fault(F_DATE, line, 74, "7", "the dishonored settlement date is not a day of the year");
+        }
+        a.dishonored_settlement = ds as i32;
+        let dr2 = fld(rec, 77, 78);
+        if !digits_width(dr2, 2) {
+            return fault(F_SYNTAX, line, 77, "7", "the dishonored reason code is not two digits");
+        }
+        a.dishonored_reason = dr2;
         return no_fault();
     }
     if !return_code_ok(code) {
@@ -764,6 +892,22 @@ fn skip_line_end(input: const u8[:], i: i64) -> i64, Fault {
     return 0, fault(F_LIMIT, 0, 95, "9", "the record end is missing");
 }
 
+// check_ach_entry_rules applies the rules of the SEC code that need
+// the addenda of the entry. The caller runs it at the batch control,
+// where the addenda of every entry stand parsed.
+fn check_ach_entry_rules(batch: AchBatch, entries: AchEntry[>..]&,
+                         addenda: AchAddenda[>..]&, line: i64) -> Fault {
+    var q = batch.entry_start;
+    while q < batch.entry_start + batch.entry_count {
+        let af2 = sec_entry_addenda_fault(batch.sec_code, entries[q], addenda);
+        if af2.kind != F_NONE {
+            return fault(af2.kind, line, 7, "6", af2.detail);
+        }
+        q += 1;
+    }
+    return no_fault();
+}
+
 // parse_ach reads a whole NACHA file of normal batches into the model.
 // A file that holds an IAT batch is a fault: the caller reads it with
 // parse_ach_iat. After a fault the arrays hold partial results; do not
@@ -925,7 +1069,8 @@ fn parse_ach_iat(input: const u8[:], opts: AchOptions, lim: Limits&, h: AchFileH
                 return fault(F_AMOUNT, line, 30, "6", "a prenote or a zero dollar entry holds an amount");
             }
             let sf = sec_entry_fault(batch.sec_code, is_reversal(batch.description),
-                                     entry.transaction_code, entry.amount);
+                                     entry.transaction_code, entry.amount,
+                                     batch.service_class, entry);
             if sf.kind != F_NONE {
                 return fault(sf.kind, line, 2, "6", sf.detail);
             }
@@ -947,12 +1092,21 @@ fn parse_ach_iat(input: const u8[:], opts: AchOptions, lim: Limits&, h: AchFileH
             if entry_indicator == 0 {
                 return fault(F_TOTAL, line, 1, "7", "the entry declares no addendum");
             }
-            let notice = fld(rec, 2, 3) == "98" || fld(rec, 2, 3) == "99";
-            // A notice of change or a return stands alone on its entry.
+            let tc2 = fld(rec, 2, 3);
+            let notice = tc2 == "98" || tc2 == "99" || tc2 == "02";
+            if tc2 == "02" && batch.sec_code != "SHR" {
+                return fault(F_UNKNOWN_TAG, line, 2, "7", "a terminal record rides on a SHR entry only");
+            }
+            // A notice of change, a return or a terminal record stands
+            // alone on its entry.
             var add_max = sec_addenda_max(batch.sec_code);
             if notice { add_max = 1; }
-            if entry.addenda_count > 0 && notice != (addenda[entry.addenda_start].kind != 5) {
-                return fault(F_SYNTAX, line, 2, "7", "an entry mixes addenda of two kinds");
+            if entry.addenda_count > 0 {
+                let first = addenda[entry.addenda_start].kind;
+                let first_alone = first != 5;
+                if first_alone != notice {
+                    return fault(F_SYNTAX, line, 2, "7", "an entry mixes addenda of two kinds");
+                }
             }
             if entry.addenda_count as i64 >= add_max {
                 return fault(F_LIMIT, line, 1, "7", "the entry holds more addenda than its SEC code allows");
@@ -999,6 +1153,8 @@ fn parse_ach_iat(input: const u8[:], opts: AchOptions, lim: Limits&, h: AchFileH
             batch.entry_count += 1;
             has_entry = false;
             batch.entry_start = (entries.len - batch.entry_count as i64) as i32;
+            let arf = check_ach_entry_rules(batch, entries, addenda, line);
+            if arf.kind != F_NONE { return arf; }
             // The control record must agree with the header.
             let csc, c0 = num_fld(rec, 2, 4, line, "8");
             if c0.kind != F_NONE { return c0; }
