@@ -383,6 +383,360 @@ fn test_limits_and_names() {
     assert(payment_file::write_pain001(h, pays, items, wopts, lim, o4).kind == payment_file::F_DATE);
 }
 
+// sample_debit writes a direct debit with two items in one block.
+fn sample_debit(opts: payment_file::PainWriteOptions, out: u8[>..]&) -> i32 {
+    var items: payment_file::DirectDebit[>..] = [];
+    var t1 = payment_file::new_direct_debit();
+    t1.end_to_end_id = "E2E-D1";
+    let m1, ok1 = finance::money(1000, "EUR");
+    if !ok1 { return -1; }
+    t1.amount = m1;
+    t1.mandate_id = "MANDATE-1";
+    t1.signature_year = 2025; t1.signature_month = 3; t1.signature_day = 14;
+    t1.has_signature_date = true;
+    t1.debtor_name = "Debtor One";
+    t1.debtor_iban = "DE89370400440532013000";
+    t1.remittance = "Membership 2026";
+    items.push(t1);
+    var t2 = payment_file::new_direct_debit();
+    t2.end_to_end_id = "E2E-D2";
+    let m2, ok2 = finance::money(2550, "EUR");
+    if !ok2 { return -1; }
+    t2.amount = m2;
+    t2.mandate_id = "MANDATE-2";
+    t2.signature_year = 2024; t2.signature_month = 11; t2.signature_day = 2;
+    t2.has_signature_date = true;
+    t2.has_amendment = true;
+    t2.amendment = false;
+    t2.debtor_name = "Debtor Two";
+    t2.debtor_iban = "CH9300762011623852957";
+    t2.debtor_bic = "UBSWCHZH80A";
+    items.push(t2);
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var b = payment_file::new_debit_info();
+    b.id = "DD-1";
+    b.creditor_name = "Club Treasurer";
+    b.creditor_iban = "NL91ABNA0417164300";
+    b.creditor_bic = "ABNANL2A";
+    b.scheme_id = "DE98ZZZ09999999999";
+    b.charge_bearer = "SLEV";
+    b.seq_type = "RCUR";
+    b.instrument = "CORE";
+    b.collection_year = 2026; b.collection_month = 12; b.collection_day = 1;
+    b.has_collection_date = true;
+    b.item_count = items.len as i32;
+    blocks.push(b);
+    var h = payment_file::new_header();
+    h.message_id = "DD-MSG-1";
+    h.has_creation = true;
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    h.creation_minutes = 9 * 60;
+    h.initiator = "Club Treasurer";
+    var lim = payment_file::default_limits();
+    let f = payment_file::write_pain008(h, blocks, items, opts, lim, out);
+    return f.kind;
+}
+
+// read_debit_kind reads a direct debit and gives the fault kind.
+fn read_debit_kind(doc: const u8[:], skip: bool, lim: payment_file::Limits&) -> i32 {
+    var ropts = payment_file::PainOptions { skip_control_sum_check: skip, check_iban: true, epc_charset: true };
+    var h = payment_file::new_header();
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var items: payment_file::DirectDebit[>..] = [];
+    var buf: u8[>..] = [];
+    let f = payment_file::parse_pain008(doc, lim, ropts, h, blocks, items, buf);
+    return f.kind;
+}
+
+fn test_debit_round_trip() {
+    var out: u8[>..] = [];
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    let w = sample_debit(wopts, out);
+    if w != 0 { print("FAIL write debit ", w, "\n"); }
+    assert(w == 0);
+    assert(find(out, "pain.008.001.02") >= 0);
+    // The schema is a sequence: pin the order of the block and of the item.
+    let order = ["<PmtInfId>", "<PmtMtd>DD</PmtMtd>", "<NbOfTxs>", "<CtrlSum>", "<PmtTpInf>", "<ReqdColltnDt>",
+                 "<Cdtr>", "<CdtrAcct>", "<CdtrAgt>", "<ChrgBr>", "<CdtrSchmeId>", "<DrctDbtTxInf>",
+                 "<PmtId>", "<InstdAmt", "<DrctDbtTx>", "<DbtrAgt>", "<Dbtr>", "<DbtrAcct>", "<RmtInf>"];
+    var at: i64 = find(out, "<PmtInf>");
+    var i: i64 = 0;
+    while i < order.len {
+        var pos: i64 = -1;
+        var k = at;
+        while k + order[i].len <= out.len && pos < 0 {
+            var m: i64 = 0;
+            while m < order[i].len && out[k + m] == order[i][m] { m += 1; }
+            if m == order[i].len { pos = k; }
+            k += 1;
+        }
+        assert(pos >= at);
+        at = pos;
+        i += 1;
+    }
+    assert(find(out, "<CtrlSum>35.50</CtrlSum>") >= 0);
+    assert(find(out, "<SeqTp>RCUR</SeqTp>") >= 0);
+    // The reader gives back what the writer wrote.
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    var lim = payment_file::default_limits();
+    var h = payment_file::new_header();
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var items: payment_file::DirectDebit[>..] = [];
+    var buf: u8[>..] = [];
+    let r = payment_file::parse_pain008(out, lim, ropts, h, blocks, items, buf);
+    assert(r.kind == payment_file::F_NONE);
+    assert(h.message_id == "DD-MSG-1" && h.count == 2 && h.control_sum == 3550);
+    assert(blocks.len == 1 && blocks[0].item_count == 2);
+    assert(blocks[0].seq_type == "RCUR" && blocks[0].instrument == "CORE");
+    assert(blocks[0].scheme_id == "DE98ZZZ09999999999" && blocks[0].creditor_bic == "ABNANL2A");
+    assert(blocks[0].collection_year == 2026 && blocks[0].collection_day == 1);
+    assert(items.len == 2);
+    assert(items[0].mandate_id == "MANDATE-1" && items[0].amount.minor == 1000);
+    assert(items[0].signature_year == 2025 && items[0].signature_month == 3);
+    assert(items[1].debtor_bic == "UBSWCHZH80A" && items[1].has_amendment && !items[1].amendment);
+    assert(items[0].remittance == "Membership 2026");
+}
+
+fn test_debit_newer_schema() {
+    // .001.08 names: BICFI, and the scheme id inside the transaction.
+    let doc = """
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.008.001.08"><CstmrDrctDbtInitn>
+<GrpHdr><MsgId>M8</MsgId><CreDtTm>2026-11-09T09:00:00</CreDtTm><NbOfTxs>1</NbOfTxs><CtrlSum>10.00</CtrlSum><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
+<PmtInf><PmtInfId>P8</PmtInfId><PmtMtd>DD</PmtMtd><PmtTpInf><LclInstrm><Cd>B2B</Cd></LclInstrm><SeqTp>OOFF</SeqTp></PmtTpInf>
+<ReqdColltnDt>2026-12-02</ReqdColltnDt><Cdtr><Nm>Cred</Nm></Cdtr><CdtrAcct><Id><IBAN>NL91ABNA0417164300</IBAN></Id></CdtrAcct>
+<CdtrAgt><FinInstnId><BICFI>ABNANL2A</BICFI></FinInstnId></CdtrAgt>
+<DrctDbtTxInf><PmtId><EndToEndId>E8</EndToEndId></PmtId><InstdAmt Ccy="EUR">10.00</InstdAmt>
+<DrctDbtTx><MndtRltdInf><MndtId>MD8</MndtId><DtOfSgntr>2025-01-31</DtOfSgntr></MndtRltdInf>
+<CdtrSchmeId><Id><OrgId><Othr><Id>DE98ZZZ09999999999</Id></Othr></OrgId></Id></CdtrSchmeId></DrctDbtTx>
+<Dbtr><Nm>Deb</Nm></Dbtr><DbtrAcct><Id><IBAN>DE89370400440532013000</IBAN></Id></DbtrAcct>
+</DrctDbtTxInf></PmtInf></CstmrDrctDbtInitn></Document>
+""";
+    var lim = payment_file::default_limits();
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    var h = payment_file::new_header();
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var items: payment_file::DirectDebit[>..] = [];
+    var buf: u8[>..] = [];
+    let r = payment_file::parse_pain008(doc, lim, ropts, h, blocks, items, buf);
+    if r.kind != 0 { print("FAIL debit .08 ", payment_file::kind_name(r.kind), " ", r.tag, " ", r.detail, "\n"); }
+    assert(r.kind == payment_file::F_NONE);
+    assert(blocks[0].creditor_bic == "ABNANL2A" && blocks[0].instrument == "B2B");
+    assert(blocks[0].scheme_id == "DE98ZZZ09999999999");
+    assert(items[0].debtor_name == "Deb" && items[0].amount.minor == 1000);
+}
+
+fn test_debit_faults() {
+    var out: u8[>..] = [];
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    assert(sample_debit(wopts, out) == 0);
+    var lim = payment_file::default_limits();
+    var a: u8[>..] = [];
+    replace_all(out, "<SeqTp>RCUR</SeqTp>", "<SeqTp>XXXX</SeqTp>", a);
+    assert(read_debit_kind(a, false, lim) == payment_file::F_SYNTAX);
+    var b: u8[>..] = [];
+    replace_all(out, "<Cd>CORE</Cd>", "<Cd>FAST</Cd>", b);
+    assert(read_debit_kind(b, false, lim) == payment_file::F_SYNTAX);
+    var c: u8[>..] = [];
+    replace_all(out, "<CtrlSum>35.50</CtrlSum>", "<CtrlSum>35.51</CtrlSum>", c);
+    assert(read_debit_kind(c, false, lim) == payment_file::F_TOTAL);
+    assert(read_debit_kind(c, true, lim) == payment_file::F_NONE);
+    var d: u8[>..] = [];
+    replace_all(out, "<CtrlSum>35.50</CtrlSum>", "<CtrlSum>35.5000</CtrlSum>", d);
+    assert(read_debit_kind(d, false, lim) == payment_file::F_NONE);
+    var e: u8[>..] = [];
+    replace_all(out, "<NbOfTxs>2</NbOfTxs>", "<NbOfTxs>5</NbOfTxs>", e);
+    assert(read_debit_kind(e, false, lim) == payment_file::F_TOTAL);
+    var f: u8[>..] = [];
+    replace_all(out, "DE89370400440532013000", "DE89370400440532013001", f);
+    assert(read_debit_kind(f, false, lim) == payment_file::F_IBAN);
+    var g: u8[>..] = [];
+    replace_all(out, "MANDATE-1", "MANDATE*1", g);
+    assert(read_debit_kind(g, false, lim) == payment_file::F_CHARSET);
+    lim.max_nesting = 3;
+    assert(read_debit_kind(out, false, lim) == payment_file::F_LIMIT);
+    // The writer refuses what the reader refuses, and what the rulebook needs.
+    lim = payment_file::default_limits();
+    var items: payment_file::DirectDebit[>..] = [];
+    var t = payment_file::new_direct_debit();
+    t.end_to_end_id = "E1";
+    let m, okm = finance::money(100, "EUR");
+    assert(okm);
+    t.amount = m;
+    t.mandate_id = "M1";
+    t.signature_year = 2025; t.signature_month = 2; t.signature_day = 30;
+    t.has_signature_date = true;
+    t.debtor_name = "D";
+    t.debtor_iban = "DE89370400440532013000";
+    items.push(t);
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var bl = payment_file::new_debit_info();
+    bl.id = "B1"; bl.creditor_name = "C"; bl.creditor_iban = "NL91ABNA0417164300";
+    bl.scheme_id = "DE98ZZZ09999999999"; bl.seq_type = "FRST"; bl.instrument = "CORE";
+    bl.collection_year = 2026; bl.collection_month = 12; bl.collection_day = 1;
+    bl.has_collection_date = true;
+    bl.item_count = 1;
+    blocks.push(bl);
+    var h = payment_file::new_header();
+    h.message_id = "M"; h.initiator = "I"; h.has_creation = true;
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    var o1: u8[>..] = [];
+    // 30 February is no date.
+    assert(payment_file::write_pain008(h, blocks, items, wopts, lim, o1).kind == payment_file::F_DATE);
+    items[0].signature_day = 28;
+    blocks[0].seq_type = "";
+    var o2: u8[>..] = [];
+    assert(payment_file::write_pain008(h, blocks, items, wopts, lim, o2).kind == payment_file::F_SYNTAX);
+    blocks[0].seq_type = "FRST";
+    items[0].mandate_id = "M<1>";
+    var o3: u8[>..] = [];
+    assert(payment_file::write_pain008(h, blocks, items, wopts, lim, o3).kind == payment_file::F_CHARSET);
+    // With the set check off the markup is escaped, not written raw.
+    var wraw = payment_file::PainWriteOptions { epc_charset: false, indent: false };
+    var o4: u8[>..] = [];
+    assert(payment_file::write_pain008(h, blocks, items, wraw, lim, o4).kind == payment_file::F_NONE);
+    assert(find(o4, "M&lt;1&gt;") >= 0 && find(o4, "<1>") < 0);
+    items[0].mandate_id = "M1";
+    items[0].amount.minor = -1;
+    var o5: u8[>..] = [];
+    assert(payment_file::write_pain008(h, blocks, items, wopts, lim, o5).kind == payment_file::F_AMOUNT);
+}
+
+
+fn test_code_lists() {
+    var lim = payment_file::default_limits();
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var dd: u8[>..] = [];
+    assert(sample_debit(wopts, dd) == 0);
+    var a: u8[>..] = [];
+    replace_all(dd, "<PmtMtd>DD</PmtMtd>", "<PmtMtd>TRF</PmtMtd>", a);
+    assert(read_debit_kind(a, false, lim) == payment_file::F_SYNTAX);
+    var b: u8[>..] = [];
+    replace_all(dd, "<ChrgBr>SLEV</ChrgBr>", "<ChrgBr>XXXX</ChrgBr>", b);
+    assert(read_debit_kind(b, false, lim) == payment_file::F_SYNTAX);
+    var c: u8[>..] = [];
+    replace_all(dd, "<BIC>ABNANL2A</BIC>", "<BIC>AB</BIC>", c);
+    assert(read_debit_kind(c, false, lim) == payment_file::F_SYNTAX);
+    var d: u8[>..] = [];
+    replace_all(dd, "<BIC>ABNANL2A</BIC>", "<BIC>abnanl2a</BIC>", d);
+    assert(read_debit_kind(d, false, lim) == payment_file::F_SYNTAX);
+    var cr: u8[>..] = [];
+    assert(sample(wopts, cr) == 0);
+    var e: u8[>..] = [];
+    replace_all(cr, "<PmtMtd>TRF</PmtMtd>", "<PmtMtd>XYZ</PmtMtd>", e);
+    assert(read_fault(e, false, lim) == payment_file::F_SYNTAX);
+    var f: u8[>..] = [];
+    replace_all(cr, "<ChrgBr>SLEV</ChrgBr>", "<ChrgBr>NONE</ChrgBr>", f);
+    assert(read_fault(f, false, lim) == payment_file::F_SYNTAX);
+    var g: u8[>..] = [];
+    replace_all(cr, "<Cd>SALA</Cd>", "<Cd></Cd>", g);
+    assert(read_fault(g, false, lim) == payment_file::F_SYNTAX);
+    // The writers refuse the same values.
+    var items: payment_file::DirectDebit[>..] = [];
+    var t = payment_file::new_direct_debit();
+    t.end_to_end_id = "E1";
+    let m, okm = finance::money(100, "EUR");
+    assert(okm);
+    t.amount = m;
+    t.mandate_id = "M1";
+    t.signature_year = 2025; t.signature_month = 2; t.signature_day = 28;
+    t.has_signature_date = true;
+    t.debtor_name = "D";
+    t.debtor_iban = "DE89370400440532013000";
+    items.push(t);
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var bl = payment_file::new_debit_info();
+    bl.id = "B1"; bl.creditor_name = "C"; bl.creditor_iban = "NL91ABNA0417164300";
+    bl.scheme_id = "DE98ZZZ09999999999"; bl.seq_type = "FRST"; bl.instrument = "CORE";
+    bl.collection_year = 2026; bl.collection_month = 12; bl.collection_day = 1;
+    bl.has_collection_date = true;
+    bl.item_count = 1;
+    blocks.push(bl);
+    var h = payment_file::new_header();
+    h.message_id = "M"; h.initiator = "I"; h.has_creation = true;
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    var o1: u8[>..] = [];
+    assert(payment_file::write_pain008(h, blocks, items, wopts, lim, o1).kind == payment_file::F_NONE);
+    blocks[0].charge_bearer = "BOTH";
+    var o2: u8[>..] = [];
+    assert(payment_file::write_pain008(h, blocks, items, wopts, lim, o2).kind == payment_file::F_SYNTAX);
+    blocks[0].charge_bearer = "";
+    blocks[0].creditor_bic = "abc";
+    var o3: u8[>..] = [];
+    assert(payment_file::write_pain008(h, blocks, items, wopts, lim, o3).kind == payment_file::F_SYNTAX);
+}
+
+fn test_missing_amount() {
+    var lim = payment_file::default_limits();
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var dd: u8[>..] = [];
+    assert(sample_debit(wopts, dd) == 0);
+    var c: u8[>..] = [];
+    replace_all(dd, "InstdAmt", "Gone", c);
+    assert(read_debit_kind(c, false, lim) == payment_file::F_SYNTAX);
+    var cr: u8[>..] = [];
+    assert(sample(wopts, cr) == 0);
+    var d: u8[>..] = [];
+    replace_all(cr, "InstdAmt", "Gone", d);
+    assert(read_fault(d, false, lim) == payment_file::F_SYNTAX);
+}
+
+fn test_amount_overflow() {
+    // The largest i64 is the last value that fits; one more must fault.
+    let big, f1 = payment_file::parse_amount("92233720368547758.07", "EUR", "InstdAmt");
+    assert(f1.kind == payment_file::F_NONE && big == 9223372036854775807);
+    let _, f2 = payment_file::parse_amount("92233720368547758.08", "EUR", "InstdAmt");
+    assert(f2.kind == payment_file::F_OVERFLOW);
+    let _, f3 = payment_file::parse_amount("92233720368547759.99", "EUR", "InstdAmt");
+    assert(f3.kind == payment_file::F_OVERFLOW);
+    // A count that does not fit is no number.
+    var lim = payment_file::default_limits();
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var out: u8[>..] = [];
+    assert(sample_debit(wopts, out) == 0);
+    var c: u8[>..] = [];
+    replace_all(out, "<NbOfTxs>2</NbOfTxs>", "<NbOfTxs>9223372036854775808</NbOfTxs>", c);
+    assert(read_debit_kind(c, false, lim) == payment_file::F_SYNTAX);
+}
+
+fn test_blocks_tile_items() {
+    var lim = payment_file::default_limits();
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    // The debit sample holds two items in one block. A block that covers
+    // one of them leaves an item out of every block.
+    var items: payment_file::DirectDebit[>..] = [];
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var out: u8[>..] = [];
+    assert(sample_debit(wopts, out) == 0);
+    var t = payment_file::new_direct_debit();
+    t.end_to_end_id = "E1";
+    let m, okm = finance::money(100, "EUR");
+    assert(okm);
+    t.amount = m;
+    t.mandate_id = "M1";
+    t.signature_year = 2025; t.signature_month = 2; t.signature_day = 28;
+    t.has_signature_date = true;
+    t.debtor_name = "D";
+    t.debtor_iban = "DE89370400440532013000";
+    items.push(t);
+    items.push(t);
+    var bl = payment_file::new_debit_info();
+    bl.id = "B1"; bl.creditor_name = "C"; bl.creditor_iban = "NL91ABNA0417164300";
+    bl.scheme_id = "DE98ZZZ09999999999"; bl.seq_type = "FRST"; bl.instrument = "CORE";
+    bl.collection_year = 2026; bl.collection_month = 12; bl.collection_day = 1;
+    bl.has_collection_date = true;
+    bl.item_count = 1;
+    blocks.push(bl);
+    var h = payment_file::new_header();
+    h.message_id = "M"; h.initiator = "I"; h.has_creation = true;
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    var o1: u8[>..] = [];
+    assert(payment_file::write_pain008(h, blocks, items, wopts, lim, o1).kind == payment_file::F_LIMIT);
+    blocks[0].item_count = 2;
+    var o2: u8[>..] = [];
+    assert(payment_file::write_pain008(h, blocks, items, wopts, lim, o2).kind == payment_file::F_NONE);
+}
+
 fn main() {
     test_round_trip();
     test_newer_schema();
@@ -392,5 +746,12 @@ fn main() {
     test_bic_both_names();
     test_sums_as_numbers();
     test_limits_and_names();
+    test_debit_round_trip();
+    test_debit_newer_schema();
+    test_debit_faults();
+    test_code_lists();
+    test_missing_amount();
+    test_amount_overflow();
+    test_blocks_tile_items();
     print("ok");
 }

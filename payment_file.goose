@@ -1,7 +1,7 @@
 // payment_file - the files that start a payment, for Goose.
 //
 // The package writes and reads the SEPA pain.001 credit transfer
-// initiation. Money is an integer count of minor units. The package
+// initiation and the pain.008 direct debit initiation. Money is an integer count of minor units. The package
 // uses no float. Every parse is one linear pass with no recursion and
 // bounded sizes.
 //
@@ -15,10 +15,14 @@ import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
 import fault;
 import model;
+import model_debit;
+import enums;
 import charset;
 import control;
 import write_pain;
 import read_pain;
+import write_pain008;
+import read_pain008;
 
 // Limits bounds every size the package touches. The defaults are
 // safe; a caller may lower them.

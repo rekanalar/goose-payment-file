@@ -16,6 +16,7 @@ import fault;
 import model;
 import charset;
 import control;
+import enums;
 
 // PainOptions holds the switches of the reader.
 struct PainOptions {
@@ -52,8 +53,9 @@ fn digits_value(text: const u8[:]) -> i64, bool {
     while i < text.len {
         let c = text[i];
         if c < '0' || c > '9' { return 0, false; }
-        if v > 922337203685477580 { return 0, false; }
-        v = v * 10 + (c - '0') as i64;
+        let d = (c - '0') as i64;
+        if v > 922337203685477580 || (v == 922337203685477580 && d > 7) { return 0, false; }
+        v = v * 10 + d;
         i += 1;
     }
     return v, true;
@@ -99,10 +101,11 @@ fn parse_amount(text: const u8[:], ccy: const u8[:], tag: const u8[:]) -> i64, F
     var v: i64 = 0;
     i = 0;
     while i < digits.len {
-        if v > 922337203685477580 {
+        let d = (digits[i] - '0') as i64;
+        if v > 922337203685477580 || (v == 922337203685477580 && d > 7) {
             return z, fault(F_OVERFLOW, 0, 0, tag, "the amount does not fit in 64 bits");
         }
-        v = v * 10 + (digits[i] - '0') as i64;
+        v = v * 10 + d;
         i += 1;
     }
     return v, no_fault();
@@ -133,6 +136,7 @@ fn bic_of(doc: xml::Doc&, agent: i32, buf: u8[>..]&) -> const u8[:] {
 
 // depth_ok tells whether no element sits deeper than the limit.
 fn depth_ok(doc: xml::Doc&, max: i64) -> bool {
+    if doc.nodes.len <= max { return true; }
     var depth: i32[>..] = [];
     var i: i64 = 0;
     while i < doc.nodes.len {
@@ -201,6 +205,137 @@ fn check_ibans_of(iban: const u8[:], tag: const u8[:], opts: PainOptions&) -> Fa
     return no_fault();
 }
 
+// account_iban gives the IBAN node of an account element. The IBAN sits
+// in Id, or directly in the account.
+fn account_iban(doc: xml::Doc&, acct: i32) -> i32 {
+    var holder = acct;
+    let idn = child(doc, acct, "Id");
+    if idn >= 0 { holder = idn; }
+    return child(doc, holder, "IBAN");
+}
+
+// check_iban_text checks the length, the character set and the check
+// digits of an IBAN text.
+fn check_iban_text(iban: const u8[:], tag: const u8[:], opts: PainOptions&, lim: Limits&) -> Fault {
+    let f = check_text(iban, 34, "IBAN", opts.epc_charset, lim);
+    if f.kind != F_NONE { return f; }
+    return check_ibans_of(iban, tag, opts);
+}
+
+// parse_flag reads a boolean text: true, 1, false or 0.
+fn parse_flag(v: const u8[:], tag: const u8[:]) -> bool, Fault {
+    if v == "true" || v == "1" { return true, no_fault(); }
+    if v == "false" || v == "0" { return false, no_fault(); }
+    return false, fault(F_SYNTAX, 0, 0, tag, "the value is not a flag");
+}
+
+// check_bic checks the length, the character set and the shape of a
+// BIC text. An absent BIC is fine.
+fn check_bic(bic: const u8[:], opts: PainOptions&, lim: Limits&) -> Fault {
+    let f = check_text(bic, 11, "BIC", opts.epc_charset, lim);
+    if f.kind != F_NONE { return f; }
+    if bic.len > 0 && !bic_ok(bic) {
+        return fault(F_SYNTAX, 0, 0, "BIC", "the BIC is not 8 or 11 capital letters and digits");
+    }
+    return no_fault();
+}
+
+// check_bearer checks a charge bearer text against the code list.
+fn check_bearer(text: const u8[:], opts: PainOptions&, lim: Limits&) -> Fault {
+    let f = check_text(text, 4, "ChrgBr", opts.epc_charset, lim);
+    if f.kind != F_NONE { return f; }
+    if !charge_bearer_ok(text) { return fault(F_SYNTAX, 0, 0, "ChrgBr", "the charge bearer is not DEBT, CRED, SHAR or SLEV"); }
+    return no_fault();
+}
+
+// check_doc checks the root element and the nesting of a parsed
+// document. It gives the node of the container element under the root.
+fn check_doc(doc: xml::Doc&, lim: Limits&, container: const u8[:]) -> i32, Fault {
+    if doc.root < 0 { return -1, fault(F_SYNTAX, 0, 0, "", "the document has no root element"); }
+    if doc.nodes[doc.root].local != "Document" {
+        return -1, fault(F_SYNTAX, 0, 0, "Document", "the root element is not a Document");
+    }
+    if !depth_ok(doc, lim.max_nesting) {
+        return -1, fault(F_LIMIT, 0, 0, "", "the elements nest deeper than max_nesting");
+    }
+    let msg = child(doc, doc.root, container);
+    if msg < 0 { return -1, fault(F_SYNTAX, 0, 0, "Document", "the document holds no initiation element"); }
+    return msg, no_fault();
+}
+
+// parse_group reads the group header: the message id, the creation
+// time, the count and the initiator. It gives the node of the control
+// sum, or -1 when the header holds none.
+fn parse_group(doc: xml::Doc&, msg: i32, opts: PainOptions&, lim: Limits&,
+               header: GrpHeader&, buf: u8[>..]&) -> i32, Fault {
+    let grp = child(doc, msg, "GrpHdr");
+    if grp < 0 { return -1, fault(F_SYNTAX, 0, 0, "", "the message holds no group header"); }
+    let mid = child(doc, grp, "MsgId");
+    if mid < 0 { return -1, fault(F_SYNTAX, 0, 0, "GrpHdr", "the group header holds no message id"); }
+    header.message_id = text_of(doc, mid, buf);
+    let mf = check_text(header.message_id, 35, "MsgId", opts.epc_charset, lim);
+    if mf.kind != F_NONE { return -1, mf; }
+    let cdt = child(doc, grp, "CreDtTm");
+    if cdt >= 0 {
+        let cf = parse_datetime(text_of(doc, cdt, buf), header, buf);
+        if cf.kind != F_NONE { return -1, cf; }
+    }
+    let nb = child(doc, grp, "NbOfTxs");
+    if nb >= 0 {
+        let n, okn = digits_value(text_of(doc, nb, buf));
+        if !okn { return -1, fault(F_SYNTAX, 0, 0, "NbOfTxs", "the count of transactions is not a number"); }
+        header.count = n;
+    }
+    let init = child(doc, grp, "InitgPty");
+    if init >= 0 {
+        let nm = child(doc, init, "Nm");
+        if nm >= 0 { header.initiator = text_of(doc, nm, buf); }
+        let inf = check_text(header.initiator, 140, "InitgPty", opts.epc_charset, lim);
+        if inf.kind != F_NONE { return -1, inf; }
+    }
+    return child(doc, grp, "CtrlSum"), no_fault();
+}
+
+// finish_group checks the control sum and the count of the group
+// header against the items. The caller computes the total.
+fn finish_group(doc: xml::Doc&, cs: i32, count: i64, total: i64, ccy: const u8[:],
+                header: GrpHeader&, opts: PainOptions&, buf: u8[>..]&) -> Fault {
+    if cs >= 0 {
+        if count == 0 {
+            return fault(F_TOTAL, 0, 0, "CtrlSum", "the control sum stands but the message holds no item");
+        }
+        let claimed, cf = check_claimed(text_of(doc, cs, buf), total, ccy, "CtrlSum", opts.skip_control_sum_check);
+        if cf.kind != F_NONE { return cf; }
+        header.has_control_sum = true;
+        header.control_sum = claimed;
+    }
+    if header.count > 0 && header.count != count {
+        return fault_sums(F_TOTAL, 0, "NbOfTxs", "the count of transactions differs from the items", count, header.count);
+    }
+    return no_fault();
+}
+
+// check_block_totals checks the count and the control sum of one
+// payment block against its items. The caller computes the sum.
+fn check_block_totals(doc: xml::Doc&, id: i32, count: i64, sum: i64, ccy: const u8[:],
+                      opts: PainOptions&, buf: u8[>..]&) -> Fault {
+    let nb = child(doc, id, "NbOfTxs");
+    if nb >= 0 {
+        let n, okn = digits_value(text_of(doc, nb, buf));
+        if !okn { return fault(F_SYNTAX, 0, 0, "NbOfTxs", "the count of transactions is not a number"); }
+        if n != count {
+            return fault_sums(F_TOTAL, 0, "NbOfTxs", "the count of the block differs from its items", count, n);
+        }
+    }
+    let cs = child(doc, id, "CtrlSum");
+    if cs >= 0 {
+        if count == 0 { return fault(F_TOTAL, 0, 0, "CtrlSum", "the control sum stands but the block holds no item"); }
+        let _, cf = check_claimed(text_of(doc, cs, buf), sum, ccy, "CtrlSum", opts.skip_control_sum_check);
+        if cf.kind != F_NONE { return cf; }
+    }
+    return no_fault();
+}
+
 // parse_pain001 reads the credit transfer initiation. The payments
 // and the items go into the flat arrays of the caller. The texts
 // point into the buffer of the caller, so the buffer must outlive
@@ -215,43 +350,11 @@ fn parse_pain001(input: const u8[:], lim: Limits&, opts: PainOptions&,
     var attrs: xml::Attr[>..] = [];
     let doc, ok = xml::parse(input, nodes, attrs);
     if !ok { return fault(F_SYNTAX, 0, 0, "", "the document is not well formed XML"); }
-    if doc.root < 0 { return fault(F_SYNTAX, 0, 0, "", "the document has no root element"); }
-    if doc.nodes[doc.root].local != "Document" {
-        return fault(F_SYNTAX, 0, 0, doc.nodes[doc.root].local, "the root element is not a pain.001 document");
-    }
-    if !depth_ok(doc, lim.max_nesting) {
-        return fault(F_LIMIT, 0, 0, "", "the elements nest deeper than max_nesting");
-    }
-    let msg = child(doc, doc.root, "CstmrCdtTrfInitn");
-    if msg < 0 { return fault(F_SYNTAX, 0, 0, "Document", "the document holds no credit transfer initiation"); }
+    let msg, df = check_doc(doc, lim, "CstmrCdtTrfInitn");
+    if df.kind != F_NONE { return df; }
     header = new_header();
-    // The group header.
-    let grp = child(doc, msg, "GrpHdr");
-    if grp < 0 { return fault(F_SYNTAX, 0, 0, "CstmrCdtTrfInitn", "the message holds no group header"); }
-    let mid = child(doc, grp, "MsgId");
-    if mid < 0 { return fault(F_SYNTAX, 0, 0, "GrpHdr", "the group header holds no message id"); }
-    header.message_id = text_of(doc, mid, buf);
-    let mf = check_text(header.message_id, 35, "MsgId", opts.epc_charset, lim);
-    if mf.kind != F_NONE { return mf; }
-    let cdt = child(doc, grp, "CreDtTm");
-    if cdt >= 0 {
-        let cf = parse_datetime(text_of(doc, cdt, buf), header, buf);
-        if cf.kind != F_NONE { return cf; }
-    }
-    let nb = child(doc, grp, "NbOfTxs");
-    if nb >= 0 {
-        let n, okn = digits_value(text_of(doc, nb, buf));
-        if !okn { return fault(F_SYNTAX, 0, 0, "NbOfTxs", "the count of transactions is not a number"); }
-        header.count = n;
-    }
-    let cs = child(doc, grp, "CtrlSum");
-    let init = child(doc, grp, "InitgPty");
-    if init >= 0 {
-        let nm = child(doc, init, "Nm");
-        if nm >= 0 { header.initiator = text_of(doc, nm, buf); }
-        let inf = check_text(header.initiator, 140, "InitgPty", opts.epc_charset, lim);
-        if inf.kind != F_NONE { return inf; }
-    }
+    let cs, gf = parse_group(doc, msg, opts, lim, header, buf);
+    if gf.kind != F_NONE { return gf; }
     // The payment blocks.
     var c = doc.nodes[msg].first_child;
     while c >= 0 {
@@ -273,23 +376,17 @@ fn parse_pain001(input: const u8[:], lim: Limits&, opts: PainOptions&,
         return fault(F_SYNTAX, 0, 0, "CstmrCdtTrfInitn", "the message holds no payment block");
     }
     // The control sum of the group header against the items.
-    if cs >= 0 {
-        if items.len == 0 {
-            return fault(F_TOTAL, 0, 0, "CtrlSum", "the control sum stands but the message holds no item");
-        }
-        let total, sf = sum_range(items, 0, items.len);
+    var total: i64 = 0;
+    if cs >= 0 && items.len > 0 {
+        let t, sf = sum_range(items, 0, items.len);
         if sf.kind != F_NONE { return sf; }
-        let ccy = items[0].amount.code;
-        let claimed, cf = check_claimed(text_of(doc, cs, buf), total, ccy, "CtrlSum", opts.skip_control_sum_check);
-        if cf.kind != F_NONE { return cf; }
-        header.has_control_sum = true;
-        header.control_sum = claimed;
-        header.control_currency = items[0].amount.code;
+        total = t;
     }
-    // The claimed count of transactions against the items.
-    if header.count > 0 && header.count != items.len as i64 {
-        return fault_sums(F_TOTAL, 0, "NbOfTxs", "the count of transactions differs from the items", items.len as i64, header.count);
-    }
+    var fin = no_fault();
+    if items.len > 0 { fin = finish_group(doc, cs, items.len, total, items[0].amount.code, header, opts, buf); }
+    else { fin = finish_group(doc, cs, items.len, total, "", header, opts, buf); }
+    if fin.kind != F_NONE { return fin; }
+    if header.has_control_sum { header.control_currency = items[0].amount.code; }
     return no_fault();
 }
 
@@ -306,20 +403,21 @@ fn parse_pmt_inf(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
         payments[cur].method = text_of(doc, pm, buf);
         let mf = check_text(payments[cur].method, 3, "PmtMtd", opts.epc_charset, lim);
         if mf.kind != F_NONE { return mf; }
+        if !pay_method_ok(payments[cur].method) {
+            return fault(F_SYNTAX, 0, 0, "PmtMtd", "the payment method is not TRF, CHK or TRA");
+        }
     }
     let bb = child(doc, id, "BtchBookg");
     if bb >= 0 {
-        let v = text_of(doc, bb, buf);
+        let v, ff = parse_flag(text_of(doc, bb, buf), "BtchBookg");
+        if ff.kind != F_NONE { return ff; }
         payments[cur].has_batch_booking = true;
-        if v == "true" || v == "1" { payments[cur].batch_booking = true; }
-        else if v != "false" && v != "0" {
-            return fault(F_SYNTAX, 0, 0, "BtchBookg", "the batch booking flag is not a flag");
-        }
+        payments[cur].batch_booking = v;
     }
     let cb = child(doc, id, "ChrgBr");
     if cb >= 0 {
         payments[cur].charge_bearer = text_of(doc, cb, buf);
-        let cbf = check_text(payments[cur].charge_bearer, 35, "ChrgBr", opts.epc_charset, lim);
+        let cbf = check_bearer(payments[cur].charge_bearer, opts, lim);
         if cbf.kind != F_NONE { return cbf; }
     }
     let dbtr = child(doc, id, "Dbtr");
@@ -349,7 +447,7 @@ fn parse_pmt_inf(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     let dbic = child(doc, id, "DbtrAgt");
     if dbic >= 0 {
         payments[cur].debtor_bic = bic_of(doc, dbic, buf);
-        let bf = check_text(payments[cur].debtor_bic, 11, "BIC", opts.epc_charset, lim);
+        let bf = check_bic(payments[cur].debtor_bic, opts, lim);
         if bf.kind != F_NONE { return bf; }
     }
     let rex = child(doc, id, "ReqdExctnDt");
@@ -378,24 +476,14 @@ fn parse_pmt_inf(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     // The count and the control sum of the block against its items.
     let start = payments[cur].item_start as i64;
     let count = items.len - start;
-    let nb = child(doc, id, "NbOfTxs");
-    if nb >= 0 {
-        let n, okn = digits_value(text_of(doc, nb, buf));
-        if !okn { return fault(F_SYNTAX, 0, 0, "NbOfTxs", "the count of transactions is not a number"); }
-        if n != count {
-            return fault_sums(F_TOTAL, 0, "NbOfTxs", "the count of the block differs from its items", count, n);
-        }
-    }
-    let cs = child(doc, id, "CtrlSum");
-    if cs >= 0 {
-        let sum, sf = sum_range(items, start, count);
+    var sum: i64 = 0;
+    if count > 0 && child(doc, id, "CtrlSum") >= 0 {
+        let t, sf = sum_range(items, start, count);
         if sf.kind != F_NONE { return sf; }
-        if count == 0 { return fault(F_TOTAL, 0, 0, "CtrlSum", "the control sum stands but the block holds no item"); }
-        let ccy = items[start].amount.code;
-        let _, cf = check_claimed(text_of(doc, cs, buf), sum, ccy, "CtrlSum", opts.skip_control_sum_check);
-        if cf.kind != F_NONE { return cf; }
+        sum = t;
     }
-    return no_fault();
+    if count > 0 { return check_block_totals(doc, id, count, sum, items[start].amount.code, opts, buf); }
+    return check_block_totals(doc, id, count, sum, "", opts, buf);
 }
 
 // parse_item reads one credit transfer item.
@@ -433,7 +521,11 @@ fn parse_item(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
                 return fault(F_AMOUNT, 0, 0, "InstdAmt", "the currency table holds not the currency");
             }
             items[cur].amount = m;
+        } else {
+            return fault(F_SYNTAX, 0, 0, "InstdAmt", "the item holds no instructed amount");
         }
+    } else {
+        return fault(F_SYNTAX, 0, 0, "Amt", "the item holds no amount");
     }
     let cdtr = child(doc, id, "Cdtr");
     if cdtr >= 0 {
@@ -462,7 +554,7 @@ fn parse_item(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     let cbic = child(doc, id, "CdtrAgt");
     if cbic >= 0 {
         items[cur].creditor_bic = bic_of(doc, cbic, buf);
-        let bf = check_text(items[cur].creditor_bic, 11, "BIC", opts.epc_charset, lim);
+        let bf = check_bic(items[cur].creditor_bic, opts, lim);
         if bf.kind != F_NONE { return bf; }
     }
     let purp = child(doc, id, "Purp");
@@ -470,6 +562,7 @@ fn parse_item(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
         let cd = child(doc, purp, "Cd");
         if cd >= 0 {
             items[cur].purpose = text_of(doc, cd, buf);
+            if items[cur].purpose.len == 0 { return fault(F_SYNTAX, 0, 0, "Purp", "the purpose code is empty"); }
             let pf = check_text(items[cur].purpose, 4, "Purp", opts.epc_charset, lim);
             if pf.kind != F_NONE { return pf; }
         }

@@ -3,9 +3,10 @@
 # payment_file - the files that start a payment, for Goose.
 
 The package writes and reads the SEPA `pain.001` credit transfer
-initiation. The writer emits the pain.001.001.03 form that the bank
-portals take. The reader takes any schema version from `.001.03` to
-`.001.10` by element name.
+initiation and the `pain.008` direct debit initiation. The writers emit
+the pain.001.001.03 and pain.008.001.02 forms that the bank portals
+take. The readers take the versions `.001.03` to `.001.10` and
+`.001.02` to `.001.08` by element name.
 
 Money is an integer count of minor units with the exponent of its
 currency. The package uses no float.
@@ -16,7 +17,7 @@ Every parse is one linear pass with no recursion. Every size has a limit.
 Add these lines to the root file of the program that uses it:
 
 ```goose
-import payment_file from "rekanalar/goose-payment-file@v0.1.0";
+import payment_file from "rekanalar/goose-payment-file@v0.2.0";
 import xml from "rekanalar/goose-xml@v2.0.0";
 import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
@@ -32,6 +33,11 @@ the line to add.
 |---|---|
 | `write_pain001(header, payments, items, opts, lim, out)` | writes the credit transfer as pain.001.001.03 XML |
 | `parse_pain001(input, lim, opts, header, payments, items, buf)` | reads any schema version into the model |
+| `write_pain008(header, blocks, items, opts, lim, out)` | writes the direct debit as pain.008.001.02 XML |
+| `parse_pain008(input, lim, opts, header, blocks, items, buf)` | reads a direct debit of `.001.02` to `.001.08` |
+| `DebitInfo` | one debit block: the creditor, the scheme id, the sequence type, the instrument, the collection date, the item range |
+| `DirectDebit` | one collection: the amount, the mandate, the debtor, the remittance |
+| `new_debit_info()`, `new_direct_debit()` | the zero values of the two debit structs |
 | `GrpHeader` | the message id, the creation time, the count, the control sum, the initiator |
 | `PaymentInfo` | one payment block: the id, the flags, the debtor, the execution date, the item range |
 | `CreditTransfer` | one item: the ids, the amount, the creditor, the purpose, the remittance |
@@ -57,6 +63,13 @@ uses the value, so `103.0000` equals `103.00`. A mismatch is a fault
 with the two sums. The reader also checks the count of each block. The
 option `skip_control_sum_check` turns the sum check off.
 
+The direct debit checks the sequence type against `FRST`, `RCUR`,
+`OOFF` and `FNAL`. It checks the local instrument against `CORE`,
+`COR1` and `B2B`. The writer needs a sequence type, the mandate id and
+the mandate signature date. The reader accepts an absent sequence type,
+because later schema versions place it elsewhere. The reader takes the
+creditor scheme id from the block or from the transaction.
+
 The writer needs the creation time and the execution date, because the
 schema makes both mandatory. It writes the elements in schema order.
 An amount below zero is a fault in the reader and in the writer.
@@ -67,14 +80,16 @@ The reader passes every IBAN to the check digits of
 
 ## Limits
 
-- **The writer emits the pain.001.001.03 form only.** The reader takes
-  the versions `.001.03` to `.001.10`. Python `sepaxml` writes the
-  same form.
+- **The writers emit one form each: pain.001.001.03 and
+  pain.008.001.02.** The readers take the later versions too. Python
+  `sepaxml` writes the same forms.
 - **The writer computes the control sum from the items.** The caller
   cannot set it. A caller who needs another total writes the file by
   hand.
-- **pain.008, NACHA and `pacs.008` stay out.** A later release adds
-  them.
+- **NACHA and `pacs.008` stay out.** A later release adds them.
+- **The writer writes the amendment flag alone.** It writes no
+  amendment details, no ultimate party and no pre-notification. The
+  reader ignores them.
 - **The application header, the authorization element and the category
   purpose stay out.** The full external code lists stay out too. The
   reader ignores them.
@@ -97,6 +112,14 @@ Protections beyond the reference libraries:
 - **The control sum and the IBANs are checked.** `sepaxml` sums the
   amounts as a float. It writes the total as it comes. This package
   adds minor units with an overflow check. It faults on a mismatch.
+- **The code lists are checked.** Five values must match their lists.
+  They are the sequence type, the instrument, the method, the charge
+  bearer and the BIC shape. `sepaxml` passes any text.
+- **The blocks must cover the items.** The writer refuses a range that
+  skips an item. It refuses an overlap too. The header total then
+  matches the blocks.
+- **A 64-bit overflow is a fault.** The reader checks each digit step.
+  The value `92233720368547758.08` is a fault, not a negative number.
 - **The amounts are exact.** An amount is minor units of the
   currency. No call of the package puts a float into an amount.
 - **Every size has a limit.** The limits cover the input, the payment
