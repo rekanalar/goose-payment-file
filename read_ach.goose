@@ -201,7 +201,7 @@ fn parse_ach_batch_header(rec: const u8[:], line: i64, b: AchBatch&) -> Fault {
 
 // parse_ach_entry reads record 6. The addenda range is set by the
 // caller, one addendum at a time.
-fn parse_ach_entry(rec: const u8[:], line: i64, e: AchEntry&) -> Fault {
+fn parse_ach_entry(rec: const u8[:], line: i64, sec: const u8[:], e: AchEntry&) -> Fault {
     let tc, f0 = num_fld(rec, 2, 3, line, "6");
     if f0.kind != F_NONE { return f0; }
     if !ach_code_ok(tc) {
@@ -219,12 +219,17 @@ fn parse_ach_entry(rec: const u8[:], line: i64, e: AchEntry&) -> Fault {
     let am, f2 = num_fld(rec, 30, 39, line, "6");
     if f2.kind != F_NONE { return f2; }
     e.amount = am;
-    let iid, f3 = txt_fld(rec, 40, 54, line, "6");
+    let col1, f3 = txt_fld(rec, 40, 54, line, "6");
     if f3.kind != F_NONE { return f3; }
-    e.individual_id = iid;
-    let nm, f4 = txt_fld(rec, 55, 76, line, "6");
+    let col2, f4 = txt_fld(rec, 55, 76, line, "6");
     if f4.kind != F_NONE { return f4; }
-    e.individual_name = nm;
+    if swapped_names(sec) {
+        e.individual_name = col1;
+        e.individual_id = col2;
+    } else {
+        e.individual_id = col1;
+        e.individual_name = col2;
+    }
     let disc, f5 = txt_fld(rec, 77, 78, line, "6");
     if f5.kind != F_NONE { return f5; }
     e.discretionary = disc;
@@ -1058,7 +1063,7 @@ fn parse_ach_iat(input: const u8[:], opts: AchOptions, lim: Limits&, h: AchFileH
             if entries.len >= lim.max_entries {
                 return fault(F_LIMIT, line, 1, "6", "more entries than the limits allow");
             }
-            let ef = parse_ach_entry(rec, line, entry);
+            let ef = parse_ach_entry(rec, line, batch.sec_code, entry);
             if ef.kind != F_NONE { return ef; }
             if opts.check_routing && !routing_ok(entry.rdfi_routing) {
                 return fault(F_SYNTAX, line, 4, "6", "the routing number does not pass the check digit");
@@ -1094,8 +1099,8 @@ fn parse_ach_iat(input: const u8[:], opts: AchOptions, lim: Limits&, h: AchFileH
             }
             let tc2 = fld(rec, 2, 3);
             let notice = tc2 == "98" || tc2 == "99" || tc2 == "02";
-            if tc2 == "02" && batch.sec_code != "SHR" {
-                return fault(F_UNKNOWN_TAG, line, 2, "7", "a terminal record rides on a SHR entry only");
+            if tc2 == "02" && batch.sec_code != "SHR" && batch.sec_code != "MTE" {
+                return fault(F_UNKNOWN_TAG, line, 2, "7", "a terminal record rides on a SHR or MTE entry only");
             }
             // A notice of change, a return or a terminal record stands
             // alone on its entry.

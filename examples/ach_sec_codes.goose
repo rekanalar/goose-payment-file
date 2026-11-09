@@ -15,7 +15,7 @@ fn build_one(sec: const u8[:], tc: i64, amount: i64, svc: i64) -> i32 {
     e.rdfi_routing = "121140399";
     e.account = "00012345678";
     e.amount = amount;
-    e.individual_name = "A";
+    e.individual_name = "Receiver";
     e.individual_id = "12280000000001";
     e.discretionary = "21";
     e.trace_number = "121140390000001";
@@ -35,7 +35,7 @@ fn build_one(sec: const u8[:], tc: i64, amount: i64, svc: i64) -> i32 {
         }
         addenda.push(ad);
     }
-    if sec == "SHR" {
+    if sec == "SHR" || sec == "MTE" {
         e.addenda_start = 0;
         e.addenda_count = 1;
         var t = payment_file::new_ach_addenda();
@@ -107,6 +107,7 @@ fn main() {
     bad += build_one("TRC", 27, 100, 225);
     bad += build_one("TRX", 27, 100, 225);
     bad += build_one("XCK", 27, 100, 225);
+    bad += build_one("MTE", 27, 100, 225);
     if bad != 0 { return; }
-    print("all ten wrote and read clean\n");
+    print("all eleven wrote and read clean\n");
 }

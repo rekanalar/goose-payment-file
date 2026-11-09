@@ -61,7 +61,36 @@ fn sec_ok(code: const u8[:]) -> bool {
     if code == "PPD" || code == "CCD" || code == "WEB" || code == "TEL" { return true; }
     if code == "CTX" || code == "ARC" || code == "BOC" || code == "POP" || code == "RCK" { return true; }
     if code == "ACK" || code == "ATX" || code == "CIE" || code == "COR" || code == "DNE" { return true; }
-    return code == "ENR" || code == "SHR" || code == "TRC" || code == "TRX" || code == "XCK";
+    return code == "ENR" || code == "SHR" || code == "TRC" || code == "TRX" || code == "XCK"
+        || code == "MTE";
+}
+
+// swapped_names tells whether the SEC code swaps the two text fields of
+// the entry. CIE and MTE hold the name of 15 characters in columns 40 to
+// 54 and the identification number of 22 characters in columns 55 to 76.
+// Every other code holds the identification number of 15 characters
+// first and the name of 22 characters second.
+fn swapped_names(sec: const u8[:]) -> bool {
+    return sec == "CIE" || sec == "MTE";
+}
+
+// blank_or_zero tells whether a text is empty or holds only spaces and
+// zeros.
+fn blank_or_zero(s: const u8[:]) -> bool {
+    var i: i64 = 0;
+    while i < s.len {
+        if s[i] != ' ' && s[i] != '0' { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+// name_rule_sec tells whether the SEC code needs a name that is not
+// blank and not all zeros.
+fn name_rule_sec(sec: const u8[:]) -> bool {
+    if sec == "ARC" || sec == "BOC" || sec == "CIE" || sec == "DNE" || sec == "ENR" { return true; }
+    if sec == "MTE" || sec == "POP" || sec == "PPD" || sec == "RCK" { return true; }
+    return sec == "SHR" || sec == "TEL" || sec == "WEB";
 }
 
 // service_class_ok tells whether the service class is one of the
@@ -331,6 +360,18 @@ fn sec_entry_fault(sec: const u8[:], reversal: bool, code: i64, amount: i64,
     if sec == "RCK" && amount > 250000 {
         return fault(F_AMOUNT, 0, 0, "6", "an RCK entry holds at most 2500.00");
     }
+    if name_rule_sec(sec) && blank_or_zero(e.individual_name) {
+        return fault(F_SYNTAX, 0, 0, "6", "the individual name is blank or all zeros");
+    }
+    // MTE: a cash withdrawal holds an amount and an identification number.
+    if sec == "MTE" {
+        if amount == 0 {
+            return fault(F_AMOUNT, 0, 0, "6", "an MTE entry holds an amount above zero");
+        }
+        if blank_or_zero(e.individual_id) {
+            return fault(F_SYNTAX, 0, 0, "6", "the identification number is blank or all zeros");
+        }
+    }
     // ACK: zero dollar remittance credit prenotes only.
     if sec == "ACK" {
         if code != 23 && code != 33 {
@@ -396,9 +437,16 @@ fn sec_entry_fault(sec: const u8[:], reversal: bool, code: i64, amount: i64,
 // one addenda 05 of DNE and ENR, and the addenda count of ATX and
 // TRX.
 fn sec_entry_addenda_fault(sec: const u8[:], e: AchEntry, addenda: AchAddenda[>..]&) -> Fault {
+    let takes_terminal = sec == "SHR" || sec == "MTE";
     if e.addenda_count > 0 && e.addenda_start >= 0 && e.addenda_start < addenda.len
-       && addenda[e.addenda_start].kind == 2 && sec != "SHR" {
-        return fault(F_LIMIT, 0, 0, "7", "a terminal record rides on a SHR entry only");
+       && addenda[e.addenda_start].kind == 2 && !takes_terminal {
+        return fault(F_LIMIT, 0, 0, "7", "a terminal record rides on a SHR or MTE entry only");
+    }
+    if takes_terminal {
+        if e.addenda_count != 1 || e.addenda_start < 0 || e.addenda_start >= addenda.len
+           || addenda[e.addenda_start].kind != 2 {
+            return fault(F_LIMIT, 0, 0, "7", "a SHR or MTE entry carries one terminal record");
+        }
     }
     if sec == "COR" {
         if e.addenda_count < 1 || e.addenda_start < 0 || e.addenda_start >= addenda.len
@@ -592,7 +640,7 @@ fn write_ach_batch_header(out: u8[>..]&, b: AchBatch) -> Fault {
 }
 
 // write_ach_entry writes record 6.
-fn write_ach_entry(out: u8[>..]&, e: AchEntry) -> Fault {
+fn write_ach_entry(out: u8[>..]&, e: AchEntry, sec: const u8[:]) -> Fault {
     out.push('6');
     let f = put_num(out, e.transaction_code, 2, "6");
     if f.kind != F_NONE { return f; }
@@ -601,9 +649,15 @@ fn write_ach_entry(out: u8[>..]&, e: AchEntry) -> Fault {
     if f2.kind != F_NONE { return f2; }
     let f3 = put_num(out, e.amount, 10, "6");
     if f3.kind != F_NONE { return f3; }
-    let f4 = put_text(out, e.individual_id, 15, "6");
+    var first = e.individual_id;
+    var second = e.individual_name;
+    if swapped_names(sec) {
+        first = e.individual_name;
+        second = e.individual_id;
+    }
+    let f4 = put_text(out, first, 15, "6");
     if f4.kind != F_NONE { return f4; }
-    let f5 = put_text(out, e.individual_name, 22, "6");
+    let f5 = put_text(out, second, 22, "6");
     if f5.kind != F_NONE { return f5; }
     let f6 = put_text(out, e.discretionary, 2, "6");
     if f6.kind != F_NONE { return f6; }
@@ -995,7 +1049,7 @@ fn write_ach(h: AchFileHeader, batches: AchBatch[>..]&, entries: AchEntry[>..]&,
         var i = b.entry_start;
         while i < b.entry_start + b.entry_count {
             let e = entries[i];
-            let ef = write_ach_entry(body, e);
+            let ef = write_ach_entry(body, e, b.sec_code);
             if ef.kind != F_NONE { return ef; }
             put_rec(body);
             var a = e.addenda_start;

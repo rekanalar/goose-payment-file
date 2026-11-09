@@ -23,7 +23,7 @@ Every parse is one linear pass with no recursion. Every size has a limit.
 Add these lines to the root file of the program that uses it:
 
 ```goose
-import payment_file from "rekanalar/goose-payment-file@v0.6.0";
+import payment_file from "rekanalar/goose-payment-file@v0.7.0";
 import xml from "rekanalar/goose-xml@v2.0.0";
 import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
@@ -128,7 +128,9 @@ holds debits only. A prenote holds an amount of zero.
 Each SEC code has its own rules. PPD, CCD and WEB hold one addendum
 at most. CTX, ATX and TRX hold many addenda. TEL, ARC, BOC, POP and
 RCK hold debits only and no addendum. ACK, CIE, DNE and ENR hold one
-addendum. SHR, TRC and XCK hold none.
+addendum. SHR and MTE hold one terminal record.
+
+TRC and XCK hold no addendum.
 
 A batch with the description `REVERSAL` holds the opposite direction.
 
@@ -136,9 +138,9 @@ An ARC entry holds 25000.00 at most. An RCK entry and an XCK entry
 hold 2500.00 at most. The trace numbers of a batch ascend.
 
 The SEC codes are PPD, CCD, WEB, TEL, CTX, ARC, BOC, POP and RCK. The
-package also takes ACK, ATX, CIE, COR, DNE, ENR, SHR, TRC, TRX, XCK and
-IAT. The transaction codes
-are the checking, savings, general ledger and loan codes. The file
+package also takes ACK, ATX, CIE, COR, DNE, ENR, MTE, SHR, TRC, TRX, XCK
+and IAT. The transaction codes are the checking, savings, general ledger
+and loan codes. The file
 holds two digits of the year. The dates run from 2000 to 2099.
 
 ## The newer SEC codes
@@ -165,10 +167,24 @@ discretionary data. It carries the card expiration date `MMYY` in the
 first four columns of its identification number. The month is `01` to
 `12`. The year is `18` to `50`.
 
-An SHR entry may carry a terminal record of type 02. It holds the
-reference information, the terminal data and the terminal state. The
-state is a postal abbreviation of a state or territory of the United
-States. A terminal record rides on a SHR entry only.
+An SHR entry and an MTE entry carry exactly one terminal record of
+type 02. It holds the reference information, the terminal data and the
+terminal state. The state is a postal abbreviation of a state or
+territory of the United States. A terminal record rides on an SHR or MTE
+entry only.
+
+An MTE entry records a cash withdrawal at a teller machine. It holds an
+amount above zero. It takes any transaction code that the service class
+allows. Its identification number is not blank and not all zeros.
+
+CIE and MTE swap the two text fields of the entry. The individual name
+holds 15 characters in columns 40 to 54. The identification number holds
+22 characters in columns 55 to 76. Every other SEC code holds the
+identification number first, with 15 characters, and the name second,
+with 22 characters.
+
+A blank or all-zero name is a fault for twelve SEC codes. They are ARC,
+BOC, CIE, DNE, ENR, MTE, POP, PPD, RCK, SHR, TEL and WEB.
 
 ## The IAT batch
 
@@ -280,17 +296,27 @@ sum, so the reader checks the count only.
   such a message.
 - **The `pacs.008` reader refuses a group header with no count.** The
   count is mandatory in the schema.
-- **ADV and MTE stay out.** The file takes twenty other SEC codes.
-  ADV and MTE carry an entry layout of their own. The reader refuses
-  them.
+- **ADV stays out.** It is the one SEC code that the package refuses.
+  ADV carries an entry record, a batch control record and a file
+  control total of its own. The reader and the writer refuse it.
+- **The CIE layout changed.** The old form held the identification
+  number first, in columns 40 to 54. The new form holds the name first,
+  with 15 characters. A file in the old form
+  reads without a fault when both fields fit. The values land in the
+  swapped fields. Re-write such a file with this package.
+- **The terminal record is now mandatory for SHR.** The old form
+  allowed an SHR entry with no terminal record. Such an entry is now a
+  fault in the writer and in the reader.
+- **The name rule is new.** A blank or all-zero individual name was
+  legal before. It is now a fault for twelve SEC codes.
 - **The IAT writer writes one batch kind per file.** The IAT writer
   holds IAT batches only. The normal writer holds the other batches.
   A file with both kinds comes from the reader alone.
 - **A code sets the return form.** An old file can
   hold such a code in the plain layout. The reader reads it as the
   other form. Re-write that file with this package.
-- **The SHR entry takes no addendum of type 05.** It takes the
-  terminal record only. The card reference number holds 11 columns
+- **The SHR and MTE entries take no addendum of type 05.** They take
+  the terminal record only. The card reference number holds 11 columns
   beside the expiration date.
 - **A reversal is a batch with the description `REVERSAL`.** The
   package does not check the other reversal rules of NACHA.
@@ -369,6 +395,14 @@ NACHA protections beyond the reference library `moov-io/ach`:
   most, as the rule of the code demands.
 - **The terminal record binds to its entry.** The reader refuses a
   terminal record with another trace number.
+- **MTE and SHR need a terminal record.** The writer and the reader
+  refuse an entry with none or with two.
+- **The name and the ID are checked.** A blank or all-zero
+  value is a fault when the code needs one. A zero MTE amount is also
+  a fault.
+- **The two text widths are exact.** The writer refuses a CIE or MTE
+  name above 15 characters. It refuses an identification number above
+  22.
 - **The plain return refuses the codes of the two forms.** A plain
   record with such a code is a fault. The reader would read the file
   as the other form, so the writer refuses it first.

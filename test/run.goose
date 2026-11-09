@@ -790,6 +790,12 @@ fn main() {
     test_sec_round_trips();
     test_sec_returns();
     test_sec_shr();
+    test_mte_round_trip();
+    test_cie_columns();
+    test_mte_refusals();
+    test_shr_terminal_required();
+    test_name_rule();
+    test_mte_reader_refusals();
     test_sec_refusals();
     test_sec_bad_return_codes();
     test_sec_mixed();
@@ -1027,6 +1033,7 @@ fn returns_build(return_code: const u8[:], change_code: const u8[:], with_death:
     addenda.push(n);
     var entries: payment_file::AchEntry[>..] = [];
     var e1 = payment_file::new_ach_entry();
+    e1.individual_name = "Receiver";
     e1.transaction_code = 27;
     e1.rdfi_routing = "121140399";
     e1.account = "00012345678";
@@ -1036,6 +1043,7 @@ fn returns_build(return_code: const u8[:], change_code: const u8[:], with_death:
     e1.addenda_count = 1;
     entries.push(e1);
     var e2 = payment_file::new_ach_entry();
+    e2.individual_name = "Receiver";
     e2.transaction_code = 27;
     e2.rdfi_routing = "121140399";
     e2.account = "00012345678";
@@ -1177,6 +1185,7 @@ fn test_iat_mixed() {
     var entries: payment_file::AchEntry[>..] = [];
     var addenda: payment_file::AchAddenda[>..] = [];
     var e = payment_file::new_ach_entry();
+    e.individual_name = "Receiver";
     e.transaction_code = 22;
     e.rdfi_routing = "121140399";
     e.account = "00012345678";
@@ -1417,6 +1426,7 @@ fn test_ach_writer_faults() {
     var entries: payment_file::AchEntry[>..] = [];
     var addenda: payment_file::AchAddenda[>..] = [];
     var e = payment_file::new_ach_entry();
+    e.individual_name = "Receiver";
     e.transaction_code = 22;
     e.rdfi_routing = "121140399";
     e.amount = 1;
@@ -1566,6 +1576,7 @@ fn ach_case_year(out: u8[>..]&, year: i32) -> i32 {
     var entries: payment_file::AchEntry[>..] = [];
     var addenda: payment_file::AchAddenda[>..] = [];
     var e = payment_file::new_ach_entry();
+    e.individual_name = "Receiver";
     e.transaction_code = 22;
     e.rdfi_routing = "121140399";
     e.amount = 1;
@@ -1736,6 +1747,7 @@ fn ach_overlap(out: u8[>..]&) -> i32 {
     a1.text = "INVOICE 2";
     addenda.push(a1);
     var e0 = payment_file::new_ach_entry();
+    e0.individual_name = "Receiver";
     e0.transaction_code = 22;
     e0.rdfi_routing = "121140399";
     e0.amount = 1;
@@ -1744,6 +1756,7 @@ fn ach_overlap(out: u8[>..]&) -> i32 {
     e0.addenda_count = 1;
     entries.push(e0);
     var e1 = payment_file::new_ach_entry();
+    e1.individual_name = "Receiver";
     e1.transaction_code = 22;
     e1.rdfi_routing = "121140399";
     e1.amount = 1;
@@ -2770,6 +2783,8 @@ fn sec_build(sec: const u8[:], tc: i64, amount: i64, svc: i64,
     e.addenda_count = 0;
     if a_kind != 0 {
         e.addenda_count = 1;
+        // A terminal record of form 1 means two of them.
+        if a_kind == 2 && a_form == 1 { e.addenda_count = 2; }
         e.addenda_start = 0;
         var a = payment_file::new_ach_addenda();
         a.kind = a_kind;
@@ -2818,6 +2833,7 @@ fn sec_build(sec: const u8[:], tc: i64, amount: i64, svc: i64,
             }
         }
         addenda.push(a);
+        if e.addenda_count == 2 { addenda.push(a); }
     }
     entries.push(e);
     var batches: payment_file::AchBatch[>..] = [];
@@ -2982,6 +2998,147 @@ fn test_sec_shr() {
     var es2: payment_file::AchEntry[>..] = [];
     var ads2: payment_file::AchAddenda[>..] = [];
     assert(sec_parse(out, bs2, es2, ads2) == payment_file::F_TOTAL);
+}
+
+// bytes_at tells whether the bytes of the file at the position equal
+// the text.
+fn bytes_at(out: u8[>..]&, pos: i64, want: const u8[:]) -> bool {
+    var k: i64 = 0;
+    while k < want.len {
+        if out[pos + k] != want[k] { return false; }
+        k += 1;
+    }
+    return true;
+}
+
+fn test_mte_round_trip() {
+    var out: u8[>..] = [];
+    assert(sec_build("MTE", 27, 5000, 225, "", "ATM00000000000000000A1", "Receiver", "NY", 2, 0, out)
+           == payment_file::F_NONE);
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(out, bs, es, ads) == payment_file::F_NONE);
+    assert(bs[0].sec_code == "MTE");
+    assert(es.len == 1 && ads.len == 1);
+    assert(es[0].individual_name == "Receiver");
+    assert(es[0].individual_id == "ATM00000000000000000A1");
+    assert(es[0].amount == 5000 && es[0].transaction_code == 27);
+    assert(ads[0].kind == 2 && ads[0].state == "NY" && ads[0].terminal_id == "TERM01");
+    // The name holds columns 40 to 54 and the id holds columns 55 to 76.
+    let r = (find(out, "\n6") + 1);
+    assert(r > 0);
+    assert(bytes_at(out, r + 39, "Receiver       "));
+    assert(bytes_at(out, r + 54, "ATM00000000000000000A1"));
+}
+
+fn test_cie_columns() {
+    var out: u8[>..] = [];
+    assert(sec_build("CIE", 22, 100, 220, "", "12345678901234567890AB", "ABCDEFGHIJKLMNO", "NY", 0, 0, out)
+           == payment_file::F_NONE);
+    let r = (find(out, "\n6") + 1);
+    assert(r > 0);
+    assert(bytes_at(out, r + 39, "ABCDEFGHIJKLMNO"));
+    assert(bytes_at(out, r + 54, "12345678901234567890AB"));
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(out, bs, es, ads) == payment_file::F_NONE);
+    assert(es[0].individual_name == "ABCDEFGHIJKLMNO");
+    assert(es[0].individual_id == "12345678901234567890AB");
+    // A PPD entry keeps the other order.
+    var out2: u8[>..] = [];
+    assert(sec_build("PPD", 22, 100, 220, "", "123456789012345", "Receiver", "NY", 0, 0, out2)
+           == payment_file::F_NONE);
+    let r2 = (find(out2, "\n6") + 1);
+    assert(bytes_at(out2, r2 + 39, "123456789012345"));
+    assert(bytes_at(out2, r2 + 54, "Receiver"));
+}
+
+fn test_mte_refusals() {
+    var out: u8[>..] = [];
+    let id = "ATM00000000000000000A1";
+    // No terminal record, and two of them.
+    assert(sec_build("MTE", 27, 100, 225, "", id, "Receiver", "NY", 0, 0, out) == payment_file::F_LIMIT);
+    assert(sec_build("MTE", 27, 100, 225, "", id, "Receiver", "NY", 2, 1, out) == payment_file::F_LIMIT);
+    // A zero amount.
+    assert(sec_build("MTE", 27, 0, 225, "", id, "Receiver", "NY", 2, 0, out) == payment_file::F_AMOUNT);
+    assert(sec_build("MTE", 27, 1, 225, "", id, "Receiver", "NY", 2, 0, out) == payment_file::F_NONE);
+    // A blank or all-zero identification number or name.
+    assert(sec_build("MTE", 27, 100, 225, "", "", "Receiver", "NY", 2, 0, out) == payment_file::F_SYNTAX);
+    assert(sec_build("MTE", 27, 100, 225, "", "0000000000", "Receiver", "NY", 2, 0, out) == payment_file::F_SYNTAX);
+    assert(sec_build("MTE", 27, 100, 225, "", id, "  ", "NY", 2, 0, out) == payment_file::F_SYNTAX);
+    // The widths: 15 for the name and 22 for the id, never cut.
+    assert(sec_build("MTE", 27, 100, 225, "", id, "ABCDEFGHIJKLMNOP", "NY", 2, 0, out) != payment_file::F_NONE);
+    assert(sec_build("MTE", 27, 100, 225, "", "ATM00000000000000000A12", "Receiver", "NY", 2, 0, out)
+           != payment_file::F_NONE);
+    // A state outside the list.
+    assert(sec_build("MTE", 27, 100, 225, "", id, "Receiver", "ZZ", 2, 0, out) != payment_file::F_NONE);
+    // A terminal record on a code that takes none.
+    assert(sec_build("PPD", 22, 100, 220, "", "123", "Receiver", "NY", 2, 0, out) == payment_file::F_LIMIT);
+    // ADV stays refused.
+    assert(sec_build("ADV", 27, 100, 225, "", id, "Receiver", "NY", 2, 0, out) != payment_file::F_NONE);
+}
+
+fn test_shr_terminal_required() {
+    var out: u8[>..] = [];
+    assert(sec_build("SHR", 22, 100, 220, "21", "12280000000001", "A", "NY", 0, 0, out)
+           == payment_file::F_LIMIT);
+    // The reader refuses an SHR batch with no terminal record. Build a
+    // PPD file and change its SEC code to SHR.
+    assert(sec_build("PPD", 22, 100, 220, "21", "12280000000001", "A", "NY", 0, 0, out)
+           == payment_file::F_NONE);
+    let h = (find(out, "\n5") + 1);
+    assert(h > 0);
+    out[h + 50] = 'S'; out[h + 51] = 'H'; out[h + 52] = 'R';
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(out, bs, es, ads) == payment_file::F_LIMIT);
+}
+
+fn test_mte_reader_refusals() {
+    var out: u8[>..] = [];
+    // An entry with no terminal record, relabelled MTE, is a fault.
+    assert(sec_build("PPD", 27, 100, 225, "", "ATM0000000000A1", "Receiver", "NY", 0, 0, out)
+           == payment_file::F_NONE);
+    let h = (find(out, "\n5") + 1);
+    assert(h > 0);
+    out[h + 50] = 'M'; out[h + 51] = 'T'; out[h + 52] = 'E';
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(out, bs, es, ads) == payment_file::F_LIMIT);
+    // A blank name on a PPD entry is a fault.
+    var out2: u8[>..] = [];
+    assert(sec_build("PPD", 22, 100, 220, "", "123", "Receiver", "NY", 0, 0, out2) == payment_file::F_NONE);
+    let r2 = (find(out2, "\n6") + 1);
+    var k: i64 = 54;
+    while k < 76 { out2[r2 + k] = ' '; k += 1; }
+    var bs2: payment_file::AchBatch[>..] = [];
+    var es2: payment_file::AchEntry[>..] = [];
+    var ads2: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(out2, bs2, es2, ads2) == payment_file::F_SYNTAX);
+    // A zero amount in an MTE file is a fault.
+    var out3: u8[>..] = [];
+    assert(sec_build("MTE", 27, 100, 225, "", "ATM00000000000000000A1", "Receiver", "NY", 2, 0, out3)
+           == payment_file::F_NONE);
+    let r3 = (find(out3, "\n6") + 1);
+    k = 29;
+    while k < 39 { out3[r3 + k] = '0'; k += 1; }
+    var bs3: payment_file::AchBatch[>..] = [];
+    var es3: payment_file::AchEntry[>..] = [];
+    var ads3: payment_file::AchAddenda[>..] = [];
+    assert(sec_parse(out3, bs3, es3, ads3) != payment_file::F_NONE);
+}
+
+fn test_name_rule() {
+    var out: u8[>..] = [];
+    assert(sec_build("PPD", 22, 100, 220, "", "123", "", "NY", 0, 0, out) == payment_file::F_SYNTAX);
+    assert(sec_build("PPD", 22, 100, 220, "", "123", "000", "NY", 0, 0, out) == payment_file::F_SYNTAX);
+    assert(sec_build("PPD", 22, 100, 220, "", "123", "A", "NY", 0, 0, out) == payment_file::F_NONE);
+    // CCD holds no name rule.
+    assert(sec_build("CCD", 22, 100, 220, "", "123", "", "NY", 0, 0, out) == payment_file::F_NONE);
 }
 
 fn test_sec_refusals() {
