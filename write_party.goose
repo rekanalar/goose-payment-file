@@ -76,6 +76,28 @@ fn write_other(out: u8[>..]&, o: OtherId&, depth: i64, opts: PainWriteOptions,
     return no_fault();
 }
 
+// write_birth writes the date and the place of birth. The date, the
+// city and the country are required.
+fn write_birth(out: u8[>..]&, b: BirthData&, depth: i64, opts: PainWriteOptions,
+               lim: Limits&) -> Fault {
+    if b.city.len == 0 {
+        return fault(F_SYNTAX, 0, 0, "CityOfBirth", "the birth data holds no city");
+    }
+    if b.country.len == 0 || !country_ok(b.country) {
+        return fault(F_SYNTAX, 0, 0, "CtryOfBirth", "the birth country is not two capital letters");
+    }
+    open(out, "DtAndPlcOfBirth", depth, opts);
+    var f = date_leaf(out, "BirthDt", b.year, b.month, b.day, depth + 1, opts);
+    if f.kind != F_NONE { return f; }
+    f = opt_leaf(out, "PrvcOfBirth", b.province, MAX_35, depth + 1, opts, lim);
+    if f.kind != F_NONE { return f; }
+    f = text_leaf(out, "CityOfBirth", b.city, MAX_35, true, depth + 1, opts, lim);
+    if f.kind != F_NONE { return f; }
+    leaf(out, "CtryOfBirth", b.country, depth + 1, opts);
+    close(out, "DtAndPlcOfBirth", depth, opts);
+    return no_fault();
+}
+
 // write_party_id writes the Id element of a party. A party with no
 // identification writes nothing.
 fn write_party_id(out: u8[>..]&, p: PartyId&, depth: i64, opts: PainWriteOptions,
@@ -84,7 +106,7 @@ fn write_party_id(out: u8[>..]&, p: PartyId&, depth: i64, opts: PainWriteOptions
         return fault(F_SYNTAX, 0, 0, "Id", "the written forms hold no element for an LEI");
     }
     if p.kind == PARTY_NONE {
-        if p.bic.len > 0 || !other_empty(p.other) {
+        if p.bic.len > 0 || !other_empty(p.other) || !birth_empty(p.birth) {
             return fault(F_SYNTAX, 0, 0, "Id", "the identification holds a value and no kind");
         }
         return no_fault();
@@ -95,7 +117,10 @@ fn write_party_id(out: u8[>..]&, p: PartyId&, depth: i64, opts: PainWriteOptions
     if p.kind == PARTY_PERSON && p.bic.len > 0 {
         return fault(F_SYNTAX, 0, 0, "PrvtId", "a private person holds no BIC");
     }
-    if p.bic.len == 0 && other_empty(p.other) {
+    if p.kind == PARTY_ORG && !birth_empty(p.birth) {
+        return fault(F_SYNTAX, 0, 0, "OrgId", "an organisation holds no birth data");
+    }
+    if p.bic.len == 0 && other_empty(p.other) && birth_empty(p.birth) {
         return fault(F_SYNTAX, 0, 0, "Id", "the identification holds nothing");
     }
     if p.bic.len > 0 && !bic_ok(p.bic) {
@@ -108,6 +133,10 @@ fn write_party_id(out: u8[>..]&, p: PartyId&, depth: i64, opts: PainWriteOptions
     if p.bic.len > 0 {
         let f = text_leaf(out, "BICOrBEI", p.bic, 11, true, depth + 2, opts, lim);
         if f.kind != F_NONE { return f; }
+    }
+    if !birth_empty(p.birth) {
+        let fb = write_birth(out, p.birth, depth + 2, opts, lim);
+        if fb.kind != F_NONE { return fb; }
     }
     if !other_empty(p.other) {
         let f2 = write_other(out, p.other, depth + 2, opts, lim);

@@ -165,6 +165,12 @@ fn write_debit(out: u8[>..]&, t: DirectDebit&, opts: PainWriteOptions, lim: Limi
         flag_leaf(out, "AmdmntInd", t.amendment, 6, opts);
     }
     close(out, "MndtRltdInf", 5, opts);
+    f = opt_leaf(out, "PreNtfctnId", t.pre_notification_id, MAX_35, 5, opts, lim);
+    if f.kind != F_NONE { return f; }
+    if t.has_pre_notification_date {
+        f = date_leaf(out, "PreNtfctnDt", t.pre_notification_year, t.pre_notification_month, t.pre_notification_day, 5, opts);
+        if f.kind != F_NONE { return f; }
+    }
     close(out, "DrctDbtTx", 4, opts);
     f = party_full(out, "UltmtCdtr", t.ultimate_creditor_name, MAX_70, t.ultimate_creditor_detail, false, 4, opts, lim);
     if f.kind != F_NONE { return f; }

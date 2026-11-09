@@ -292,6 +292,20 @@ fn check_doc(doc: xml::Doc&, lim: Limits&, container: const u8[:]) -> i32, Fault
     return msg, no_fault();
 }
 
+// single refuses a second copy of a child element, so the first copy
+// never hides a later one.
+fn single(doc: xml::Doc&, id: i32, tag: const u8[:]) -> Fault {
+    var count: i64 = 0;
+    var k = doc.nodes[id].first_child;
+    while k >= 0 {
+        let m = doc.nodes[k];
+        if m.kind == xml::KIND_ELEMENT && m.local == tag { count += 1; }
+        k = m.next_sibling;
+    }
+    if count > 1 { return fault(F_SYNTAX, 0, 0, tag, "the element holds a second copy of a single element"); }
+    return no_fault();
+}
+
 // need gives the node of a child element that the schema requires. A
 // missing element is a fault that names it.
 fn need(doc: xml::Doc&, id: i32, tag: const u8[:]) -> i32, Fault {

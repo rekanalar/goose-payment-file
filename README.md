@@ -23,7 +23,7 @@ Every parse is one linear pass with no recursion. Every size has a limit.
 Add these lines to the root file of the program that uses it:
 
 ```goose
-import payment_file from "rekanalar/goose-payment-file@v0.13.0";
+import payment_file from "rekanalar/goose-payment-file@v0.14.0";
 import xml from "rekanalar/goose-xml@v2.0.0";
 import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
@@ -42,7 +42,7 @@ the line to add.
 | `write_pain008(header, blocks, items, opts, lim, out)` | writes the direct debit as pain.008.001.02 XML |
 | `parse_pain008(input, lim, opts, header, blocks, items, buf)` | reads a direct debit of `.001.02` to `.001.08` |
 | `DebitInfo` | one debit block: the creditor with its address and identification, the block ultimate creditor, the scheme id, the service level, the sequence type, the instrument, the collection date, the item range |
-| `DirectDebit` | one collection: the amount, the mandate, the debtor with its address and identification, the ultimate parties, the purpose, the remittance, the typed creditor reference |
+| `DirectDebit` | one collection: the amount, the mandate, the debtor with its address and identification, the ultimate parties, the purpose, the remittance, the typed creditor reference, the pre-notification |
 | `new_debit_info()`, `new_direct_debit()` | the zero values of the two debit structs |
 | `GrpHeader` | the message id, the creation time, the count, the control sum, the initiator |
 | `PaymentInfo` | one payment block: the id, the flags, the service level, the debtor, the ultimate debtor, the execution date, the item range |
@@ -155,6 +155,14 @@ The reader refuses a party that holds two names. It refuses an address
 that holds two copies of one field. It refuses an address line with no
 text. It refuses an identification that holds two LEIs. It refuses an
 identification with two organisation or private identifications.
+
+A private person holds the date and place of birth. The date, the
+city and the country are required. The province is optional. An
+organisation holds no birth data, and that is a fault. A person with
+birth data and nothing else is a valid identification.
+
+The direct debit holds a pre-notification: an id and a date. Both are
+optional. The writer writes them after the mandate information.
 
 The direct debit carries the same party fields as the credit transfer.
 The block creditor and the item debtor need a name. An ultimate party
@@ -436,8 +444,7 @@ sum, so the reader checks the count only.
 - **The writer needs each batch to hold an entry.** The reader refuses
   an empty batch too.
 - **The writer writes the amendment flag alone.** It writes no
-  amendment details, no ultimate party and no pre-notification. The
-  reader ignores them.
+  amendment details. The reader ignores them.
 - **The application header, the authorization element and the category
   purpose stay out.** The full external code lists stay out too. The
   reader ignores them.
@@ -454,8 +461,7 @@ sum, so the reader checks the count only.
   organisation or a private person. Both in one party is a fault.
 - **The reader of a SEPA message ignores some elements.** It ignores
   the address type. It ignores the country of residence and the contact
-  details. It ignores the date and place of birth. It ignores the
-  proprietary forms of a scheme name and of a reference type.
+  details.
 - **The written forms hold no LEI element.** The reader fills the LEI
   of a party identification from a later file. The writer refuses a
   model that holds one. The forms `pain.001.001.03` and
@@ -552,6 +558,10 @@ Protections beyond the reference libraries:
   type with two proprietary texts. An execution date with two children
   is a fault. So is a date that holds a text and a child element.
   The first copy never hides the second.
+- **The reader refuses birth data that is incomplete or bad.** A
+  missing date, city or country is a fault. So is a country that is not
+  two capital letters. So is an organisation with birth data. So is
+  a second copy of a birth element or of a pre-notification element.
 - **The BIC of a party identification is checked.** The same rule as
   the agent applies. The rule is looser than the schema pattern.
 - **The LEI of a party identification is checked.** It holds 20

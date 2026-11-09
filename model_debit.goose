@@ -61,6 +61,11 @@ struct DirectDebit {
     structured_proprietary_type: const u8[:],
     structured_issuer: const u8[:],
     structured_ref: const u8[:],
+    pre_notification_id: const u8[:],
+    pre_notification_year: i32,
+    pre_notification_month: i32,
+    pre_notification_day: i32,
+    has_pre_notification_date: bool,
 }
 
 // new_debit_info gives a block with the zero values.
@@ -90,5 +95,7 @@ fn new_direct_debit() -> DirectDebit {
         purpose: "", remittance: "",
         structured_type: "", structured_proprietary_type: "",
         structured_issuer: "", structured_ref: "",
+        pre_notification_id: "", pre_notification_year: 0, pre_notification_month: 0,
+        pre_notification_day: 0, has_pre_notification_date: false,
     };
 }

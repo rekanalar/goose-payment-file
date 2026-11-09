@@ -253,6 +253,21 @@ fn parse_debit(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
                 items[at].amendment = v;
             }
         }
+        var sg = single(doc, tx, "PreNtfctnId");
+        if sg.kind == F_NONE { sg = single(doc, tx, "PreNtfctnDt"); }
+        if sg.kind != F_NONE { return sg; }
+        let pnid, pnf = opt_text(doc, child(doc, tx, "PreNtfctnId"), "PreNtfctnId", MAX_35, opts, lim, buf);
+        if pnf.kind != F_NONE { return pnf; }
+        items[at].pre_notification_id = pnid;
+        let pnd = child(doc, tx, "PreNtfctnDt");
+        if pnd >= 0 {
+            let y, m, d, pdf = parse_date(text_of(doc, pnd, buf), "PreNtfctnDt");
+            if pdf.kind != F_NONE { return pdf; }
+            items[at].pre_notification_year = y;
+            items[at].pre_notification_month = m;
+            items[at].pre_notification_day = d;
+            items[at].has_pre_notification_date = true;
+        }
         // Later schema versions place the scheme id in the transaction.
         var sid: i32 = -1;
         if blocks[cur].scheme_id.len == 0 { sid = child(doc, tx, "CdtrSchmeId"); }

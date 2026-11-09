@@ -123,6 +123,39 @@ fn read_other(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     return o, no_fault();
 }
 
+// read_birth reads the date and the place of birth. The date, the city
+// and the country are required. The texts point into the buffer.
+fn read_birth(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
+              buf: u8[>..]&) -> BirthData, Fault {
+    var b = new_birth();
+    var sf = single(doc, id, "BirthDt");
+    if sf.kind == F_NONE { sf = single(doc, id, "PrvcOfBirth"); }
+    if sf.kind == F_NONE { sf = single(doc, id, "CityOfBirth"); }
+    if sf.kind == F_NONE { sf = single(doc, id, "CtryOfBirth"); }
+    if sf.kind != F_NONE { return b, sf; }
+    let dt, f0 = need(doc, id, "BirthDt");
+    if f0.kind != F_NONE { return b, f0; }
+    let y, m, d, f1 = parse_date(text_of(doc, dt, buf), "BirthDt");
+    if f1.kind != F_NONE { return b, f1; }
+    b.year = y; b.month = m; b.day = d; b.has_date = true;
+    let city, f2 = need(doc, id, "CityOfBirth");
+    if f2.kind != F_NONE { return b, f2; }
+    b.city = text_of(doc, city, buf);
+    let cf = check_text(b.city, MAX_35, "CityOfBirth", opts.epc_charset, lim);
+    if cf.kind != F_NONE { return b, cf; }
+    if b.city.len == 0 { return b, fault(F_SYNTAX, 0, 0, "CityOfBirth", "the birth data holds no city"); }
+    let ctry, f3 = need(doc, id, "CtryOfBirth");
+    if f3.kind != F_NONE { return b, f3; }
+    b.country = text_of(doc, ctry, buf);
+    if !country_ok(b.country) {
+        return b, fault(F_SYNTAX, 0, 0, "CtryOfBirth", "the birth country is not two capital letters");
+    }
+    let prov, f4 = opt_text(doc, child(doc, id, "PrvcOfBirth"), "PrvcOfBirth", MAX_35, opts, lim, buf);
+    if f4.kind != F_NONE { return b, f4; }
+    b.province = prov;
+    return b, no_fault();
+}
+
 // read_party_id reads the Id element of a party. A party with no
 // identification writes nothing. A party that names both an
 // organisation and a private person is a fault.
@@ -195,6 +228,16 @@ fn read_party_id(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
                     }
                     p.lei = lei;
                 }
+            } else if n.local == "DtAndPlcOfBirth" {
+                if p.kind != PARTY_PERSON {
+                    return p, fault(F_SYNTAX, 0, 0, "DtAndPlcOfBirth", "an organisation holds no birth data");
+                }
+                if !birth_empty(p.birth) {
+                    return p, fault(F_SYNTAX, 0, 0, "DtAndPlcOfBirth", "the identification holds two birth data elements");
+                }
+                let bd, fb = read_birth(doc, c, opts, lim, buf);
+                if fb.kind != F_NONE { return p, fb; }
+                p.birth = bd;
             } else if n.local == "Othr" {
                 count += 1;
                 if count > 1 {
@@ -207,7 +250,7 @@ fn read_party_id(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
         }
         c = n.next_sibling;
     }
-    if p.bic.len == 0 && p.lei.len == 0 && other_empty(p.other) {
+    if p.bic.len == 0 && p.lei.len == 0 && other_empty(p.other) && birth_empty(p.birth) {
         return p, fault(F_SYNTAX, 0, 0, "Id", "the identification holds nothing");
     }
     return p, no_fault();

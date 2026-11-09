@@ -1943,6 +1943,148 @@ fn test_mandatory_elements() {
     assert(renamed_tag(t2, "<Zz>", "</Zz>", "<Xx>", "</Xx>", true) == "none");
 }
 
+// swap_debit replaces two texts of a pain.008 document and gives the
+// kind of the reader fault.
+fn swap_debit(text: const u8[:], a1: const u8[:], b1: const u8[:], a2: const u8[:], b2: const u8[:]) -> i32 {
+    var base: u8[>..] = [];
+    put(base, text);
+    var one: u8[>..] = [];
+    var two: u8[>..] = [];
+    replace_all(base, a1, b1, one);
+    replace_all(one, a2, b2, two);
+    var lim = payment_file::default_limits();
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    var h = payment_file::new_header();
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var items: payment_file::DirectDebit[>..] = [];
+    var buf: u8[>..] = [];
+    let doc: const u8[:] = two[..];
+    let r = payment_file::parse_pain008(doc, lim, ropts, h, blocks, items, buf);
+    return r.kind;
+}
+
+// sample_birth writes a direct debit whose debtor holds birth data and
+// whose item holds a pre-notification. The mode picks one fault:
+// 0 none, 1 an organisation, 2 no city, 3 a bad country, 4 a bad date,
+// 5 no kind, 6 a bad pre-notification date.
+fn sample_birth(opts: payment_file::PainWriteOptions, mode: i32, out: u8[>..]&) -> i32 {
+    var items: payment_file::DirectDebit[>..] = [];
+    var t = payment_file::new_direct_debit();
+    t.end_to_end_id = "E2E-B1";
+    let m, ok = finance::money(1000, "EUR");
+    if !ok { return -1; }
+    t.amount = m;
+    t.mandate_id = "MANDATE-B1";
+    t.signature_year = 2025; t.signature_month = 6; t.signature_day = 1;
+    t.has_signature_date = true;
+    t.debtor_name = "Debtor Born";
+    t.debtor_iban = "DE89370400440532013000";
+    t.debtor_detail.id.kind = payment_file::PARTY_PERSON;
+    t.debtor_detail.id.birth.year = 1980; t.debtor_detail.id.birth.month = 2; t.debtor_detail.id.birth.day = 29;
+    t.debtor_detail.id.birth.has_date = true;
+    t.debtor_detail.id.birth.province = "Bavaria";
+    t.debtor_detail.id.birth.city = "Munich";
+    t.debtor_detail.id.birth.country = "DE";
+    t.pre_notification_id = "PRE-77";
+    t.pre_notification_year = 2026; t.pre_notification_month = 11; t.pre_notification_day = 20;
+    t.has_pre_notification_date = true;
+    if mode == 1 { t.debtor_detail.id.kind = payment_file::PARTY_ORG; }
+    if mode == 2 { t.debtor_detail.id.birth.city = ""; }
+    if mode == 3 { t.debtor_detail.id.birth.country = "de"; }
+    if mode == 4 { t.debtor_detail.id.birth.day = 30; }
+    if mode == 5 { t.debtor_detail.id.kind = payment_file::PARTY_NONE; }
+    if mode == 6 { t.pre_notification_month = 13; }
+    items.push(t);
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var b = payment_file::new_debit_info();
+    b.id = "DD-B";
+    b.creditor_name = "Club Treasurer";
+    b.creditor_iban = "NL91ABNA0417164300";
+    b.creditor_bic = "ABNANL2A";
+    b.scheme_id = "DE98ZZZ09999999999";
+    b.seq_type = "RCUR";
+    b.instrument = "CORE";
+    b.collection_year = 2026; b.collection_month = 12; b.collection_day = 1;
+    b.has_collection_date = true;
+    b.item_count = 1;
+    blocks.push(b);
+    var h = payment_file::new_header();
+    h.message_id = "DD-MSG-B";
+    h.has_creation = true;
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    h.initiator = "Club Treasurer";
+    var lim = payment_file::default_limits();
+    let f = payment_file::write_pain008(h, blocks, items, opts, lim, out);
+    return f.kind;
+}
+
+// The date and place of birth and the pre-notification write in schema
+// order and read back. A bad value is a fault and leaves the buffer.
+fn test_birth_and_pre_notification() {
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var out: u8[>..] = [];
+    assert(sample_birth(wopts, 0, out) == 0);
+    let tx = find(out, "<DrctDbtTx>");
+    let mi = find_from(out, "</MndtRltdInf>", tx);
+    let pn = find_from(out, "<PreNtfctnId>PRE-77</PreNtfctnId><PreNtfctnDt>2026-11-20</PreNtfctnDt></DrctDbtTx>", mi);
+    assert(tx >= 0 && mi > tx && pn > mi);
+    let bd = find(out, "<PrvtId><DtAndPlcOfBirth><BirthDt>1980-02-29</BirthDt><PrvcOfBirth>Bavaria</PrvcOfBirth><CityOfBirth>Munich</CityOfBirth><CtryOfBirth>DE</CtryOfBirth></DtAndPlcOfBirth></PrvtId>");
+    assert(bd >= 0);
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    var lim = payment_file::default_limits();
+    var h = payment_file::new_header();
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var items: payment_file::DirectDebit[>..] = [];
+    var buf: u8[>..] = [];
+    let text: const u8[:] = out[..];
+    let r = payment_file::parse_pain008(text, lim, ropts, h, blocks, items, buf);
+    if r.kind != 0 { print("FAIL birth read ", payment_file::kind_name(r.kind), " ", r.tag, " ", r.detail, "\n"); }
+    assert(r.kind == payment_file::F_NONE);
+    let b = items[0].debtor_detail.id.birth;
+    assert(b.has_date && b.year == 1980 && b.month == 2 && b.day == 29);
+    assert(b.province == "Bavaria" && b.city == "Munich" && b.country == "DE");
+    assert(items[0].pre_notification_id == "PRE-77" && items[0].has_pre_notification_date);
+    assert(items[0].pre_notification_month == 11 && items[0].pre_notification_day == 20);
+    // The writer refuses each bad model and keeps the buffer.
+    var k: i32 = 1;
+    while k <= 6 {
+        var bad: u8[>..] = [];
+        bad.push('O');
+        let wk = sample_birth(wopts, k, bad);
+        assert(wk == payment_file::F_SYNTAX || wk == payment_file::F_DATE);
+        assert(bad.len == 1);
+        k += 1;
+    }
+    // The reader refuses birth data of an organisation, a second copy,
+    // and a date, a city or a country that is missing or bad.
+    assert(swap_debit(text, "<PrvtId>", "<OrgId>", "</PrvtId>", "</OrgId>") == payment_file::F_SYNTAX);
+    assert(swap_debit(text, "<CityOfBirth>Munich</CityOfBirth>", "", "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+    assert(swap_debit(text, "<CtryOfBirth>DE</CtryOfBirth>", "", "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+    assert(swap_debit(text, "<CtryOfBirth>DE</CtryOfBirth>", "<CtryOfBirth>Germany</CtryOfBirth>", "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+    assert(swap_debit(text, "<BirthDt>1980-02-29</BirthDt>", "", "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+    assert(swap_debit(text, "<BirthDt>1980-02-29</BirthDt>", "<BirthDt>1981-02-29</BirthDt>", "<Zz>", "<Zz>") == payment_file::F_DATE);
+    assert(swap_debit(text, "<PreNtfctnDt>2026-11-20</PreNtfctnDt>", "<PreNtfctnDt>2026-13-20</PreNtfctnDt>", "<Zz>", "<Zz>") == payment_file::F_DATE);
+    assert(swap_debit(text, "</DtAndPlcOfBirth>", "</DtAndPlcOfBirth><DtAndPlcOfBirth><BirthDt>1980-02-29</BirthDt><CityOfBirth>X</CityOfBirth><CtryOfBirth>DE</CtryOfBirth></DtAndPlcOfBirth>", "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+    assert(swap_debit(text, "<PrvcOfBirth>Bavaria</PrvcOfBirth>", "<PrvcOfBirth>A</PrvcOfBirth><PrvcOfBirth>B</PrvcOfBirth>", "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+    assert(swap_debit(text, "<PreNtfctnId>PRE-77</PreNtfctnId>", "<PreNtfctnId>A</PreNtfctnId><PreNtfctnId>B</PreNtfctnId>", "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+    assert(swap_debit(text, "<PreNtfctnDt>2026-11-20</PreNtfctnDt>", "<PreNtfctnDt>2026-11-20</PreNtfctnDt><PreNtfctnDt>2026-11-21</PreNtfctnDt>", "<Zz>", "<Zz>") == payment_file::F_SYNTAX);
+    // A person that holds only birth data is an identification.
+    assert(swap_debit(text, "<Zz>", "<Zz>", "<Zz>", "<Zz>") == payment_file::F_NONE);
+    // The pain.001 reader takes the birth data of a private debtor.
+    let p001 = """
+<?xml version="1.0"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03">
+<CstmrCdtTrfInitn><GrpHdr><MsgId>M1</MsgId><CreDtTm>2026-11-09T09:00:00</CreDtTm><NbOfTxs>1</NbOfTxs><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
+<PmtInf><PmtInfId>P1</PmtInfId><PmtMtd>TRF</PmtMtd><ReqdExctnDt>2026-12-01</ReqdExctnDt>
+<Dbtr><Nm>Debtor</Nm><Id><PrvtId><DtAndPlcOfBirth><BirthDt>1975-05-06</BirthDt><CityOfBirth>Lyon</CityOfBirth><CtryOfBirth>FR</CtryOfBirth></DtAndPlcOfBirth></PrvtId></Id></Dbtr>
+<DbtrAcct><Id><IBAN>NL91ABNA0417164300</IBAN></Id></DbtrAcct><DbtrAgt><FinInstnId></FinInstnId></DbtrAgt>
+<CdtTrfTxInf><PmtId><EndToEndId>E1</EndToEndId></PmtId><Amt><InstdAmt Ccy="EUR">1.00</InstdAmt></Amt>
+<Cdtr><Nm>Cred</Nm></Cdtr><CdtrAcct><Id><IBAN>BE68539007547034</IBAN></Id></CdtrAcct></CdtTrfTxInf>
+</PmtInf></CstmrCdtTrfInitn></Document>
+""";
+    assert(swap_kind(p001, "<Zz>", "<Zz>") == payment_file::F_NONE);
+    assert(swap_kind(p001, "<CityOfBirth>Lyon</CityOfBirth>", "") == payment_file::F_SYNTAX);
+}
+
 // The service level comes back over a round trip in both messages.
 fn test_service_level_round_trip() {
     var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
@@ -2004,6 +2146,7 @@ fn main() {
     test_proprietary_reference();
     test_service_level_round_trip();
     test_mandatory_elements();
+    test_birth_and_pre_notification();
     test_code_lists();
     test_missing_amount();
     test_amount_overflow();

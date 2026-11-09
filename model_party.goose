@@ -50,15 +50,30 @@ struct OtherId {
     issuer: const u8[:],
 }
 
+// BirthData holds the date and the place of birth of a private person.
+// The date, the city and the country are required when any field is
+// set. The province is optional. The country holds two capital letters.
+struct BirthData {
+    year: i32,
+    month: i32,
+    day: i32,
+    has_date: bool,
+    province: const u8[:],
+    city: const u8[:],
+    country: const u8[:],
+}
+
 // PartyId holds the identification of a party. The kind tells whether
 // it is an organisation or a private person. Only an organisation
-// holds a BIC or BEI. The LEI exists in later message forms only, so
-// the reader fills it and the writer refuses it.
+// holds a BIC or BEI. Only a private person holds birth data. The LEI
+// exists in later message forms only, so the reader fills it and the
+// writer refuses it.
 struct PartyId {
     kind: i32,
     bic: const u8[:],
     other: OtherId,
     lei: const u8[:],
+    birth: BirthData,
 }
 
 // PartyDetail holds what a party carries beyond its name.
@@ -91,11 +106,16 @@ fn other_empty(o: OtherId) -> bool {
         && o.issuer.len == 0;
 }
 
+// birth_empty tells whether birth data holds no field.
+fn birth_empty(b: BirthData) -> bool {
+    return !b.has_date && b.province.len == 0 && b.city.len == 0 && b.country.len == 0;
+}
+
 // detail_empty tells whether a party detail holds nothing. The reader
 // and the writer share this rule.
 fn detail_empty(d: PartyDetail) -> bool {
     return address_empty(d.address) && d.id.kind == PARTY_NONE && d.id.bic.len == 0
-        && d.id.lei.len == 0 && other_empty(d.id.other);
+        && d.id.lei.len == 0 && other_empty(d.id.other) && birth_empty(d.id.birth);
 }
 
 // new_address gives an address with no field.
@@ -112,9 +132,14 @@ fn new_other_id() -> OtherId {
     return OtherId { id: "", scheme_code: "", scheme_proprietary: "", issuer: "" };
 }
 
+// new_birth gives birth data that holds nothing.
+fn new_birth() -> BirthData {
+    return BirthData { year: 0, month: 0, day: 0, has_date: false, province: "", city: "", country: "" };
+}
+
 // new_party_id gives an identification that holds nothing.
 fn new_party_id() -> PartyId {
-    return PartyId { kind: PARTY_NONE, bic: "", other: new_other_id(), lei: "" };
+    return PartyId { kind: PARTY_NONE, bic: "", other: new_other_id(), lei: "", birth: new_birth() };
 }
 
 // new_party_detail gives a party detail that holds nothing.
