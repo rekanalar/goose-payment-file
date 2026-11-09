@@ -782,7 +782,453 @@ fn main() {
     test_pacs008_missing_parts();
     test_pacs008_no_account();
     test_pacs008_security();
+    test_iat_round_trip();
+    test_iat_optional();
+    test_iat_returns();
+    test_iat_refusals();
+    test_iat_mixed();
     print("ok");
+}
+
+// iat_file_header gives the file header of the IAT tests.
+fn iat_file_header() -> payment_file::AchFileHeader {
+    var h = payment_file::new_ach_file_header();
+    h.destination_routing = "121140399";
+    h.origin_id = "1234567890";
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    h.creation_hour = 14; h.creation_minute = 30;
+    h.id_modifier = "A";
+    h.destination_name = "Acme Bank";
+    h.origin_name = "Acme Corp";
+    h.reference = "REF00001";
+    return h;
+}
+
+// iat_build writes one IAT batch with one entry. The flag opt adds the
+// optional records of types 02, 17 and 18. The kind drop leaves one
+// mandatory record out. The flag long_name gives the name of the
+// record of type 10 one byte too many.
+fn iat_build(opt: bool, drop: i64, long_name: bool, dob: const u8[:], out: u8[>..]&) -> payment_file::Fault {
+    var addenda: payment_file::IatAddenda[>..] = [];
+    if opt {
+        var a = payment_file::new_iat_addenda(2);
+        a.ref_one = "REF1"; a.terminal_id = "T1"; a.serial = "000001";
+        a.date_month = 11; a.date_day = 9; a.auth_code = "AUTH01";
+        a.location = "Main St"; a.city = "Boston"; a.state = "MA";
+        addenda.push(a);
+    }
+    if drop != 10 {
+        var a = payment_file::new_iat_addenda(10);
+        a.txn_type_code = "BUS"; a.foreign_amount = 11000; a.foreign_trace = "FX123";
+        a.name = "Hans Mueller";
+        if long_name { a.name = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJ"; }
+        addenda.push(a);
+    }
+    if drop != 11 {
+        var a = payment_file::new_iat_addenda(11);
+        a.name = "Acme Corp"; a.street = "1 Main St";
+        addenda.push(a);
+    }
+    if drop != 12 {
+        var a = payment_file::new_iat_addenda(12);
+        a.city_state = "New York*NY\\"; a.country_postal = "US*10001\\";
+        addenda.push(a);
+    }
+    if drop != 13 {
+        var a = payment_file::new_iat_addenda(13);
+        a.name = "Acme Bank"; a.id_qualifier = "01"; a.id_number = "121140399";
+        a.branch_country = "US";
+        addenda.push(a);
+    }
+    if drop != 14 {
+        var a = payment_file::new_iat_addenda(14);
+        a.name = "Deutsche Bank"; a.id_qualifier = "02"; a.id_number = "DEUTDEFF";
+        a.branch_country = "DE";
+        addenda.push(a);
+    }
+    if drop != 15 {
+        var a = payment_file::new_iat_addenda(15);
+        a.receiver_id = "R-123"; a.street = "Hauptstr 5";
+        addenda.push(a);
+    }
+    if drop != 16 {
+        var a = payment_file::new_iat_addenda(16);
+        a.city_state = "Berlin*BE\\"; a.country_postal = "DE*10115\\";
+        a.date_of_birth = dob;
+        addenda.push(a);
+    }
+    if opt {
+        var a = payment_file::new_iat_addenda(17);
+        a.payment_info = "Invoice 77";
+        addenda.push(a);
+        var b = payment_file::new_iat_addenda(17);
+        b.payment_info = "Second line";
+        addenda.push(b);
+        var c = payment_file::new_iat_addenda(18);
+        c.name = "Corr Bank"; c.id_qualifier = "02"; c.id_number = "CORRUS33";
+        c.branch_country = "US";
+        addenda.push(c);
+    }
+    var entries: payment_file::IatEntry[>..] = [];
+    var e = payment_file::new_iat_entry();
+    e.transaction_code = 22;
+    e.rdfi_routing = "021000021";
+    e.amount = 12345;
+    e.dfi_account = "DE89370400440532013000";
+    e.addenda_start = 0;
+    e.addenda_count = addenda.len as i32;
+    entries.push(e);
+    var batches: payment_file::IatBatch[>..] = [];
+    var b = payment_file::new_iat_batch();
+    b.service_class = 220;
+    b.fx_indicator = "FF";
+    b.fx_ref_indicator = 3;
+    b.dest_country = "DE";
+    b.originator_id = "1234567890";
+    b.description = "PAYMENT";
+    b.origin_currency = "USD";
+    b.dest_currency = "EUR";
+    b.effective_year = 2026; b.effective_month = 11; b.effective_day = 10;
+    b.odfi_id = "12114039";
+    b.batch_number = 2;
+    b.entry_start = 0;
+    b.entry_count = 1;
+    batches.push(b);
+    var lim = payment_file::default_limits();
+    return payment_file::write_ach_iat(iat_file_header(), batches, entries, addenda, lim, out);
+}
+
+// iat_read parses a file of the IAT tests and gives the fault kind.
+fn iat_read(input: u8[>..]&, bs: payment_file::AchBatch[>..]&, es: payment_file::AchEntry[>..]&,
+            ads: payment_file::AchAddenda[>..]&, ib: payment_file::IatBatch[>..]&,
+            ie: payment_file::IatEntry[>..]&, ia: payment_file::IatAddenda[>..]&) -> i32 {
+    var h = payment_file::new_ach_file_header();
+    var lim = payment_file::default_limits();
+    var opts = payment_file::new_ach_options();
+    return payment_file::parse_ach_iat(input, opts, lim, h, bs, es, ads, ib, ie, ia).kind;
+}
+
+// iat_kind parses a file and gives the fault kind and nothing else.
+fn iat_kind(input: u8[>..]&) -> i32 {
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    var ib: payment_file::IatBatch[>..] = [];
+    var ie: payment_file::IatEntry[>..] = [];
+    var ia: payment_file::IatAddenda[>..] = [];
+    return iat_read(input, bs, es, ads, ib, ie, ia);
+}
+
+// test_iat_round_trip writes an IAT batch with the seven mandatory
+// records and reads it back.
+fn test_iat_round_trip() {
+    var out: u8[>..] = [];
+    assert(iat_build(false, 0, false, "1980-01-02", out).kind == payment_file::F_NONE);
+    // 12 records pad to 2 blocks of 10: 20 records of 95 bytes.
+    assert(out.len == 20 * 95);
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    var ib: payment_file::IatBatch[>..] = [];
+    var ie: payment_file::IatEntry[>..] = [];
+    var ia: payment_file::IatAddenda[>..] = [];
+    assert(iat_read(out, bs, es, ads, ib, ie, ia) == payment_file::F_NONE);
+    assert(bs.len == 0 && es.len == 0 && ads.len == 0);
+    assert(ib.len == 1 && ie.len == 1 && ia.len == 7);
+    assert(ib[0].fx_indicator == "FF" && ib[0].fx_ref_indicator == 3);
+    assert(ib[0].dest_country == "DE" && ib[0].origin_currency == "USD" && ib[0].dest_currency == "EUR");
+    assert(ib[0].originator_id == "1234567890" && ib[0].description == "PAYMENT");
+    assert(ib[0].effective_year == 2026 && ib[0].effective_month == 11 && ib[0].effective_day == 10);
+    assert(ib[0].batch_number == 2 && ib[0].entry_count == 1);
+    assert(ib[0].settlement_date == "");
+    assert(ie[0].transaction_code == 22 && ie[0].amount == 12345);
+    assert(ie[0].rdfi_routing == "021000021");
+    assert(ie[0].dfi_account == "DE89370400440532013000");
+    assert(ie[0].trace_number == "121140390000001");
+    assert(ie[0].addenda_count == 7);
+    assert(ia[0].kind == 10 && ia[0].txn_type_code == "BUS" && ia[0].foreign_amount == 11000);
+    assert(ia[0].foreign_trace == "FX123" && ia[0].name == "Hans Mueller");
+    assert(ia[1].kind == 11 && ia[1].name == "Acme Corp" && ia[1].street == "1 Main St");
+    assert(ia[2].kind == 12 && ia[2].city_state == "New York*NY\\");
+    assert(ia[3].kind == 13 && ia[3].id_number == "121140399" && ia[3].branch_country == "US");
+    assert(ia[4].kind == 14 && ia[4].name == "Deutsche Bank" && ia[4].id_qualifier == "02");
+    assert(ia[5].kind == 15 && ia[5].receiver_id == "R-123" && ia[5].street == "Hauptstr 5");
+    assert(ia[6].kind == 16 && ia[6].date_of_birth == "1980-01-02");
+    // The settlement date of the batch header comes from the file.
+    var sd: u8[>..] = [];
+    replace_all(out, "EUR261110   112114039", "EUR261110010112114039", sd);
+    var ib2: payment_file::IatBatch[>..] = [];
+    var ie2: payment_file::IatEntry[>..] = [];
+    var ia2: payment_file::IatAddenda[>..] = [];
+    var bs2: payment_file::AchBatch[>..] = [];
+    var es2: payment_file::AchEntry[>..] = [];
+    var ads2: payment_file::AchAddenda[>..] = [];
+    assert(iat_read(sd, bs2, es2, ads2, ib2, ie2, ia2) == payment_file::F_NONE);
+    assert(ib2[0].settlement_date == "010");
+    // parse_ach refuses a file with an IAT batch, so no batch is lost.
+    var h = payment_file::new_ach_file_header();
+    var lim = payment_file::default_limits();
+    var opts = payment_file::new_ach_options();
+    var b2: payment_file::AchBatch[>..] = [];
+    var e2: payment_file::AchEntry[>..] = [];
+    var a2: payment_file::AchAddenda[>..] = [];
+    assert(payment_file::parse_ach(out, opts, lim, h, b2, e2, a2).kind == payment_file::F_UNKNOWN_TAG);
+}
+
+// test_iat_optional adds the optional records of types 02, 17 and 18.
+fn test_iat_optional() {
+    var out: u8[>..] = [];
+    assert(iat_build(true, 0, false, "1980-01-02", out).kind == payment_file::F_NONE);
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    var ib: payment_file::IatBatch[>..] = [];
+    var ie: payment_file::IatEntry[>..] = [];
+    var ia: payment_file::IatAddenda[>..] = [];
+    assert(iat_read(out, bs, es, ads, ib, ie, ia) == payment_file::F_NONE);
+    assert(ia.len == 11 && ie[0].addenda_count == 11);
+    assert(ia[0].kind == 2 && ia[0].ref_one == "REF1" && ia[0].terminal_id == "T1");
+    assert(ia[0].serial == "000001" && ia[0].date_month == 11 && ia[0].date_day == 9);
+    assert(ia[0].auth_code == "AUTH01" && ia[0].location == "Main St");
+    assert(ia[0].city == "Boston" && ia[0].state == "MA");
+    assert(ia[1].kind == 10 && ia[7].kind == 16);
+    assert(ia[8].kind == 17 && ia[8].payment_info == "Invoice 77" && ia[8].sequence == 1);
+    assert(ia[9].kind == 17 && ia[9].payment_info == "Second line" && ia[9].sequence == 2);
+    assert(ia[10].kind == 18 && ia[10].name == "Corr Bank" && ia[10].id_number == "CORRUS33");
+    assert(ia[10].branch_country == "US" && ia[10].sequence == 1);
+}
+
+// returns_build writes a batch of two WEB entries. The first holds a
+// return of the given code and the second holds a notice of change
+// of the given code.
+fn returns_build(return_code: const u8[:], change_code: const u8[:], with_death: bool,
+                 out: u8[>..]&) -> payment_file::Fault {
+    var addenda: payment_file::AchAddenda[>..] = [];
+    var r = payment_file::new_ach_addenda();
+    r.kind = 99;
+    r.return_code = return_code;
+    r.original_trace = "121140390000009";
+    r.original_dfi = "12114039";
+    r.addenda_information = "INSUFFICIENT";
+    if with_death { r.death_year = 2026; r.death_month = 11; r.death_day = 1; }
+    addenda.push(r);
+    var n = payment_file::new_ach_addenda();
+    n.kind = 98;
+    n.change_code = change_code;
+    n.original_trace = "121140390000008";
+    n.original_dfi = "12114039";
+    n.corrected_data = "00012345678";
+    addenda.push(n);
+    var entries: payment_file::AchEntry[>..] = [];
+    var e1 = payment_file::new_ach_entry();
+    e1.transaction_code = 27;
+    e1.rdfi_routing = "121140399";
+    e1.account = "00012345678";
+    e1.amount = 100;
+    e1.trace_number = "121140390000001";
+    e1.addenda_start = 0;
+    e1.addenda_count = 1;
+    entries.push(e1);
+    var e2 = payment_file::new_ach_entry();
+    e2.transaction_code = 27;
+    e2.rdfi_routing = "121140399";
+    e2.account = "00012345678";
+    e2.amount = 200;
+    e2.trace_number = "121140390000002";
+    e2.addenda_start = 1;
+    e2.addenda_count = 1;
+    entries.push(e2);
+    var batches: payment_file::AchBatch[>..] = [];
+    var b = payment_file::new_ach_batch();
+    b.service_class = 200;
+    b.company_name = "Acme Corp";
+    b.company_id = "1234567890";
+    b.sec_code = "WEB";
+    b.description = "RETURNS";
+    b.effective_year = 2026; b.effective_month = 11; b.effective_day = 10;
+    b.odfi_id = "12114039";
+    b.batch_number = 1;
+    b.entry_start = 0;
+    b.entry_count = 2;
+    batches.push(b);
+    var lim = payment_file::default_limits();
+    return payment_file::write_ach(iat_file_header(), batches, entries, addenda, lim, out);
+}
+
+// test_iat_returns writes a return and a notice of change and reads
+// them back.
+fn test_iat_returns() {
+    var out: u8[>..] = [];
+    assert(returns_build("R01", "C01", true, out).kind == payment_file::F_NONE);
+    var h = payment_file::new_ach_file_header();
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    var lim = payment_file::default_limits();
+    var opts = payment_file::new_ach_options();
+    assert(payment_file::parse_ach(out, opts, lim, h, bs, es, ads).kind == payment_file::F_NONE);
+    assert(ads.len == 2 && es[0].addenda_count == 1 && es[1].addenda_count == 1);
+    assert(ads[0].kind == 99 && ads[0].return_code == "R01");
+    assert(ads[0].original_trace == "121140390000009" && ads[0].original_dfi == "12114039");
+    assert(ads[0].addenda_information == "INSUFFICIENT");
+    assert(ads[0].death_year == 2026 && ads[0].death_month == 11 && ads[0].death_day == 1);
+    assert(ads[1].kind == 98 && ads[1].change_code == "C01");
+    assert(ads[1].original_trace == "121140390000008");
+    assert(ads[1].corrected_data == "00012345678");
+    // A return with no date of death reads back with no date.
+    var out2: u8[>..] = [];
+    assert(returns_build("R90", "C69", false, out2).kind == payment_file::F_NONE);
+    var bs2: payment_file::AchBatch[>..] = [];
+    var es2: payment_file::AchEntry[>..] = [];
+    var ads2: payment_file::AchAddenda[>..] = [];
+    assert(payment_file::parse_ach(out2, opts, lim, h, bs2, es2, ads2).kind == payment_file::F_NONE);
+    assert(ads2[0].return_code == "R90" && ads2[0].death_year == 0);
+    assert(ads2[1].change_code == "C69");
+}
+
+// test_iat_refusals pins the writer and reader faults of the IAT
+// batch, the returns and the notices.
+fn test_iat_refusals() {
+    var out: u8[>..] = [];
+    // A mandatory record that is missing is a fault in the writer.
+    assert(iat_build(false, 13, false, "1980-01-02", out).kind == payment_file::F_SYNTAX);
+    assert(iat_build(false, 10, false, "1980-01-02", out).kind == payment_file::F_SYNTAX);
+    assert(iat_build(false, 16, false, "1980-01-02", out).kind == payment_file::F_SYNTAX);
+    // A text that is longer than its field is a fault, never a cut.
+    assert(iat_build(false, 0, true, "1980-01-02", out).kind == payment_file::F_LIMIT);
+    // A return code in a gap of the list, a lower-case code and a
+    // change code in a gap are faults in the writer.
+    assert(returns_build("R48", "C01", false, out).kind == payment_file::F_SYNTAX);
+    assert(returns_build("R54", "C01", false, out).kind == payment_file::F_SYNTAX);
+    assert(returns_build("r01", "C01", false, out).kind == payment_file::F_SYNTAX);
+    assert(returns_build("R01", "C10", false, out).kind == payment_file::F_SYNTAX);
+    assert(returns_build("R01", "C70", false, out).kind == payment_file::F_SYNTAX);
+    // Every fault left the output as it was.
+    assert(out.len == 0);
+    // The reader refuses the same faults in a file.
+    var good: u8[>..] = [];
+    assert(iat_build(false, 0, false, "1980-01-02", good).kind == payment_file::F_NONE);
+    var bad: u8[>..] = [];
+    replace_all(good, "0000012345DE89", "0000012346DE89", bad);
+    assert(iat_kind(bad) == payment_file::F_TOTAL);
+    var fx: u8[>..] = [];
+    replace_all(good, "FF3", "XX3", fx);
+    assert(iat_kind(fx) == payment_file::F_SYNTAX);
+    var ret: u8[>..] = [];
+    assert(returns_build("R01", "C01", false, ret).kind == payment_file::F_NONE);
+    var r48: u8[>..] = [];
+    replace_all(ret, "R01", "R48", r48);
+    assert(iat_kind(r48) == payment_file::F_SYNTAX);
+    var c10: u8[>..] = [];
+    replace_all(ret, "C01", "C10", c10);
+    assert(iat_kind(c10) == payment_file::F_SYNTAX);
+    // The skip switch turns the total checks off, not the layout checks.
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    var ib: payment_file::IatBatch[>..] = [];
+    var ie: payment_file::IatEntry[>..] = [];
+    var ia: payment_file::IatAddenda[>..] = [];
+    var h = payment_file::new_ach_file_header();
+    var lim = payment_file::default_limits();
+    var opts = payment_file::new_ach_options();
+    opts.skip_total_check = true;
+    assert(payment_file::parse_ach_iat(bad, opts, lim, h, bs, es, ads, ib, ie, ia).kind == payment_file::F_NONE);
+    // A control byte or a byte above 127 in any column is a fault.
+    var ctl: u8[>..] = [];
+    replace_all(good, "Hans Mueller", "Hans\x01Mueller", ctl);
+    assert(iat_kind(ctl) == payment_file::F_CHARSET);
+    var high: u8[>..] = [];
+    replace_all(good, "Hans Mueller", "Hans\xc3\xa9Mueller", high);
+    assert(iat_kind(high) == payment_file::F_CHARSET);
+    // A date of birth that is not a date is a fault in the writer.
+    assert(iat_build(false, 0, false, "1980-13-45", out).kind == payment_file::F_DATE);
+    assert(iat_build(false, 0, false, "19800102", out).kind == payment_file::F_DATE);
+    // An empty date of birth is allowed, because a corporate
+    // originator has none.
+    var empty: u8[>..] = [];
+    assert(iat_build(false, 0, false, "", empty).kind == payment_file::F_NONE);
+    assert(iat_kind(empty) == payment_file::F_NONE);
+    // The reader refuses a malformed date of birth in a file.
+    var bad_dob: u8[>..] = [];
+    replace_all(good, "1980-01-02", "1980-13-45", bad_dob);
+    assert(iat_kind(bad_dob) == payment_file::F_DATE);
+    // The limits hold the reader back when the file holds too much.
+    var small = payment_file::default_limits();
+    small.max_addenda = 3;
+    assert(payment_file::parse_ach_iat(good, opts, small, h, bs, es, ads, ib, ie, ia).kind == payment_file::F_LIMIT);
+}
+
+// record_at gives the record n of a file of 95 byte records.
+fn record_at(src: u8[>..]&, n: i64) -> const u8[:] {
+    return src[n * 95..(n + 1) * 95];
+}
+
+// test_iat_mixed reads a file with a PPD batch and an IAT batch. The
+// file control covers both.
+fn test_iat_mixed() {
+    // The PPD batch: one credit of 100.00.
+    var entries: payment_file::AchEntry[>..] = [];
+    var addenda: payment_file::AchAddenda[>..] = [];
+    var e = payment_file::new_ach_entry();
+    e.transaction_code = 22;
+    e.rdfi_routing = "121140399";
+    e.account = "00012345678";
+    e.amount = 10000;
+    e.trace_number = "121140390000001";
+    entries.push(e);
+    var batches: payment_file::AchBatch[>..] = [];
+    var b = payment_file::new_ach_batch();
+    b.service_class = 220;
+    b.company_name = "Acme Corp";
+    b.company_id = "1234567890";
+    b.sec_code = "PPD";
+    b.description = "PAYROLL";
+    b.effective_year = 2026; b.effective_month = 11; b.effective_day = 10;
+    b.odfi_id = "12114039";
+    b.batch_number = 1;
+    b.entry_start = 0;
+    b.entry_count = 1;
+    batches.push(b);
+    var lim = payment_file::default_limits();
+    var ppd: u8[>..] = [];
+    assert(payment_file::write_ach(iat_file_header(), batches, entries, addenda, lim, ppd).kind == payment_file::F_NONE);
+    var iat: u8[>..] = [];
+    assert(iat_build(false, 0, false, "1980-01-02", iat).kind == payment_file::F_NONE);
+    // The mixed file: the header, the PPD batch records 1 to 3, the IAT
+    // batch records 1 to 10, then the file control and the padding.
+    var mixed: u8[>..] = [];
+    put(mixed, record_at(ppd, 0));
+    var k: i64 = 1;
+    while k <= 3 { put(mixed, record_at(ppd, k)); k += 1; }
+    k = 1;
+    while k <= 10 { put(mixed, record_at(iat, k)); k += 1; }
+    // 2 batches, 2 blocks, 9 entries and addenda, hash 14214041,
+    // credits 10000 + 12345.
+    put(mixed, "9000002000002000000090014214041000000000000000000022345");
+    k = 0;
+    while k < 39 { mixed.push(' '); k += 1; }
+    mixed.push('\n');
+    var rest: i64 = 0;
+    while rest < 5 {
+        k = 0;
+        while k < 94 { mixed.push('9'); k += 1; }
+        mixed.push('\n');
+        rest += 1;
+    }
+    var bs: payment_file::AchBatch[>..] = [];
+    var es: payment_file::AchEntry[>..] = [];
+    var ads: payment_file::AchAddenda[>..] = [];
+    var ib: payment_file::IatBatch[>..] = [];
+    var ie: payment_file::IatEntry[>..] = [];
+    var ia: payment_file::IatAddenda[>..] = [];
+    assert(iat_read(mixed, bs, es, ads, ib, ie, ia) == payment_file::F_NONE);
+    assert(bs.len == 1 && es.len == 1 && ib.len == 1 && ie.len == 1 && ia.len == 7);
+    assert(bs[0].sec_code == "PPD" && ib[0].dest_country == "DE");
+    // A wrong batch count in the file control is a fault.
+    var bad: u8[>..] = [];
+    replace_all(mixed, "9000002000002", "9000003000002", bad);
+    assert(iat_kind(bad) == payment_file::F_TOTAL);
 }
 
 // ach_sample builds the base file: one batch of PPD credits and one

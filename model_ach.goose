@@ -62,10 +62,21 @@ struct AchEntry {
     addenda_count: i32,
 }
 
-// AchAddenda holds one addenda record of type 05: the payment
-// related text.
+// AchAddenda holds one addenda record of a normal batch. The kind is
+// 5, 98 or 99: the payment related text, the notice of change and the
+// return. The fields a kind does not use stay empty.
 struct AchAddenda {
+    kind: i64,
     text: const u8[:],
+    change_code: const u8[:],
+    return_code: const u8[:],
+    original_trace: const u8[:],
+    original_dfi: const u8[:],
+    corrected_data: const u8[:],
+    addenda_information: const u8[:],
+    death_month: i32,
+    death_day: i32,
+    death_year: i32,
 }
 
 // new_ach_file_header gives a file header with the zero values.
@@ -99,7 +110,12 @@ fn new_ach_entry() -> AchEntry {
     };
 }
 
-// new_ach_addenda gives an addenda with the zero values.
+// new_ach_addenda gives an addenda of kind 5 with the zero values.
 fn new_ach_addenda() -> AchAddenda {
-    return AchAddenda { text: "" };
+    return AchAddenda {
+        kind: 5, text: "", change_code: "", return_code: "",
+        original_trace: "", original_dfi: "", corrected_data: "",
+        addenda_information: "", death_month: 0, death_day: 0,
+        death_year: 0,
+    };
 }

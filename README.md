@@ -23,7 +23,7 @@ Every parse is one linear pass with no recursion. Every size has a limit.
 Add these lines to the root file of the program that uses it:
 
 ```goose
-import payment_file from "rekanalar/goose-payment-file@v0.4.0";
+import payment_file from "rekanalar/goose-payment-file@v0.5.0";
 import xml from "rekanalar/goose-xml@v2.0.0";
 import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
@@ -53,12 +53,18 @@ the line to add.
 | `PainWriteOptions` | the writer switches: `epc_charset`, `indent` |
 | `write_ach(header, batches, entries, addenda, lim, out)` | writes the NACHA file with all totals computed |
 | `parse_ach(input, opts, lim, header, batches, entries, addenda)` | reads a NACHA file and checks the control records |
+| `write_ach_iat(header, batches, entries, addenda, lim, out)` | writes a NACHA file with one batch of the SEC code IAT |
+| `parse_ach_iat(input, opts, lim, header, batches, entries, addenda, iat_batches, iat_entries, iat_addenda)` | reads a NACHA file that holds IAT batches |
 | `AchFileHeader` | record 1: the routing number, the origin id, the creation time, the names |
 | `AchBatch` | records 5 and 8: the service class, the company, the SEC code, the effective date, the entry range |
 | `AchEntry` | record 6: the transaction code, the routing number, the account, the amount in cents, the trace number |
-| `AchAddenda` | record 7, type 05: the payment related text |
+| `AchAddenda` | record 7: the payment related text, the notice of change and the return |
+| `IatBatch` | record 5 of an IAT batch: the foreign exchange fields, the country, the currencies |
+| `IatEntry` | record 6 of an IAT batch: the transaction code, the account, the screening indicators, the amount |
+| `IatAddenda` | record 7 of an IAT batch: the records of type 02 and 10 to 18 |
 | `AchOptions` | the reader switches: `skip_total_check`, `check_routing` |
 | `new_ach_file_header()`, `new_ach_batch()`, `new_ach_entry()`, `new_ach_addenda()`, `new_ach_options()` | the zero values of the ACH structs |
+| `new_iat_batch()`, `new_iat_entry()`, `new_iat_addenda(kind)` | the zero values of the IAT structs |
 | `write_pacs008(header, txs, opts, lim, out)` | writes the customer credit transfer as pacs.008.001.08 XML |
 | `parse_pacs008(input, lim, opts, header, txs, buf)` | reads a customer credit transfer of any `.001.NN` form |
 | `Pacs008Header` | the group header, the settlement method, the settlement date, the two agents |
@@ -127,10 +133,49 @@ opposite direction.
 An ARC entry holds 25000.00 at most. An RCK entry holds 2500.00 at most.
 The trace numbers of a batch ascend.
 
-The SEC code is PPD, CCD, WEB, TEL, CTX, ARC, BOC, POP or RCK. The
+The SEC code is PPD, CCD, WEB, TEL, CTX, ARC, BOC, POP, RCK or IAT. The
 transaction codes are the checking, savings, general ledger and loan
 codes. The file holds two digits of the year, so the dates run from
 2000 to 2099.
+
+## The IAT batch
+
+The SEC code IAT holds an international payment. Its batch header holds
+the foreign exchange fields, the destination country, the originator
+identification and the two currency codes. Its entry holds an account
+number of up to 35 characters and the two screening indicators. The
+writer computes the trace number and the count of the addenda records.
+
+The entry of an IAT batch carries seven mandatory addenda records. They
+are the records of types 10 to 16. They stand in that order. One record
+of type 02 may stand before them. Two records of type 17 and one record
+of type 18 may follow them. A missing record and a wrong order are
+faults.
+
+The addenda of type 10 holds the name, the transaction type code, the
+foreign amount and the foreign trace number. The records of types 11 to
+16 hold the addresses and the date of birth. They also hold the
+identification numbers and the receiver relationship. The records of
+types 17 and 18 hold the payment information and the foreign exchange
+descriptor.
+
+The record of type 98 is a notice of change. It holds the change code
+and the corrected data. The change codes are `C01` to `C09`, `C13`,
+`C14` and `C61` to `C69`.
+
+The record of type 99 is a return. It holds the return code, the trace
+number of the original entry and the information text. The return codes
+are `R01` to `R47`, `R50` to `R53`, `R61`, `R62`, `R67` to `R77`,
+`R80` to `R85` and `R90`. A return may hold the date of death of the
+receiver.
+
+A notice of change and a return ride on a normal entry. They stand
+alone. The package accepts them on any SEC code.
+
+The writer of the IAT batch writes one batch kind per file. The writer
+of the normal batches writes the other batches. The reader takes a file
+of both kinds. The reader of the normal batches refuses a file with an
+IAT batch.
 
 ## The pacs.008 message
 
@@ -194,10 +239,16 @@ sum, so the reader checks the count only.
   such a message.
 - **The `pacs.008` reader refuses a group header with no count.** The
   count is mandatory in the schema.
-- **The NACHA file takes nine SEC codes.** They are PPD, CCD, WEB,
-  TEL, CTX, ARC, BOC, POP and RCK. It holds addenda of type 05 only. IAT batches, ADV
-  records, returns and notices of change stay out. The reader refuses
-  them.
+- **The NACHA file takes ten SEC codes.** They are PPD, CCD, WEB, TEL,
+  CTX, ARC, BOC, POP, RCK and IAT. The addenda records of type 05, 02,
+  10 to 18, 98 and 99 stay in scope. The records of ADV, ACK, ATX, CIE,
+  COR, DNE, ENR, MTE, SHR, TRC, TRX and XCK stay out. The reader
+  refuses them.
+- **The IAT writer writes one batch kind per file.** The IAT writer
+  holds IAT batches only. The normal writer holds the other batches.
+  A file with both kinds comes from the reader alone.
+- **The contested and dishonored returns stay out.** A type 99 record
+  with such a form reads as a plain return.
 - **A reversal is a batch with the description `REVERSAL`.** The
   package does not check the other reversal rules of NACHA.
 - **The writer needs each batch to hold an entry.** The reader refuses
@@ -259,6 +310,23 @@ NACHA protections beyond the reference library `moov-io/ach`:
   fault.
 - **The writer and the reader agree.** A file that the writer
   accepts, the reader accepts.
+- **The code lists of the IAT batch are checked.** The reference
+  library takes any text.
+
+| List | The values |
+|---|---|
+| The foreign exchange indicator | `FV`, `VF` or `FF` |
+| The currency codes | three capital letters |
+| The country codes | two capital letters |
+| The branch country codes | two or three capital letters or digits |
+| The transaction type codes | the 22 codes of the list |
+| The change codes | the 20 codes of the list |
+| The return codes | the 71 codes of the list |
+- **The reader checks the records of an IAT entry.** A missing
+  mandatory record and a wrong order are faults. The reference library
+  reads the records in any order.
+- **The date of birth is a date.** A malformed date is a fault in the
+  writer and in the reader. The reference library takes any text.
 - **The writer writes all or nothing.** A fault leaves the output
   buffer as it was. The addenda ranges of the entries must follow each
   other, so no addendum text is lost or written twice.

@@ -240,6 +240,18 @@ fn sec_addenda_max(sec: const u8[:]) -> i64 {
     return 0;
 }
 
+// entry_addenda_max gives the most addenda that an entry may hold. A
+// notice of change or a return rides on an entry of any SEC code and
+// stands alone. The other addenda follow the limit of the SEC code. An
+// entry never mixes the kinds.
+fn entry_addenda_max(sec: const u8[:], e: AchEntry, addenda: AchAddenda[>..]&) -> i64 {
+    if e.addenda_count > 0 && e.addenda_start >= 0 && e.addenda_start < addenda.len
+       && addenda[e.addenda_start].kind != 5 {
+        return 1;
+    }
+    return sec_addenda_max(sec);
+}
+
 // sec_entry_fault applies the rules of the SEC code to one entry.
 // TEL, ARC, BOC, POP and RCK hold debits only, and a reversal batch
 // holds credits only. ARC holds at most 25000.00 and RCK at most
@@ -274,21 +286,31 @@ fn trace_after(a: const u8[:], b: const u8[:]) -> bool {
     return false;
 }
 
+// service_class_fault gives the fault of a transaction code that moves
+// money against the service class of its batch. The caller gives the
+// line and the column of the record.
+fn service_class_fault(service_class: i64, code: i64) -> Fault {
+    if service_class == 220 && ach_debit_code(code) {
+        return fault(F_TOTAL, 0, 0, "6", "a batch of credits only holds a debit");
+    }
+    if service_class == 225 && ach_credit_code(code) {
+        return fault(F_TOTAL, 0, 0, "6", "a batch of debits only holds a credit");
+    }
+    return no_fault();
+}
+
 // check_entry checks one entry before any byte goes out: the code,
 // the routing number, the amount, the trace number and the ranges.
-fn check_entry(e: AchEntry, odfi_id: const u8[:], service_class: i64, sec: const u8[:], reversal: bool) -> Fault {
+fn check_entry(e: AchEntry, odfi_id: const u8[:], service_class: i64, sec: const u8[:],
+               reversal: bool, add_max: i64) -> Fault {
     if !ach_code_ok(e.transaction_code) {
         return fault(F_SYNTAX, 0, 0, "6", "the transaction code is not in the NACHA set");
     }
-    if service_class == 220 && ach_debit_code(e.transaction_code) {
-        return fault(F_TOTAL, 0, 0, "6", "a batch of credits only holds a debit");
-    }
-    if service_class == 225 && ach_credit_code(e.transaction_code) {
-        return fault(F_TOTAL, 0, 0, "6", "a batch of debits only holds a credit");
-    }
+    let df = service_class_fault(service_class, e.transaction_code);
+    if df.kind != F_NONE { return df; }
     let sf = sec_entry_fault(sec, reversal, e.transaction_code, e.amount);
     if sf.kind != F_NONE { return sf; }
-    if e.addenda_count as i64 > sec_addenda_max(sec) {
+    if e.addenda_count as i64 > add_max {
         return fault(F_LIMIT, 0, 0, "7", "the entry holds more addenda than its SEC code allows");
     }
     if ach_zero_amount_code(e.transaction_code) && e.amount != 0 {
@@ -439,11 +461,89 @@ fn write_ach_entry(out: u8[>..]&, e: AchEntry) -> Fault {
     return no_fault();
 }
 
+// check_ach_addenda checks one addenda record before any byte goes
+// out. The kind picks the checks: the code lists, the widths and the
+// digit fields of the notice and the return.
+fn check_ach_addenda(a: AchAddenda) -> Fault {
+    if a.kind == 5 {
+        return check_ach_text(a.text, 80, "7");
+    }
+    if a.kind == 98 {
+        if !noc_code_ok(a.change_code) {
+            return fault(F_SYNTAX, 0, 0, "7", "the change code is not in the notice list");
+        }
+        if a.original_trace.len != 15 || !digits_ok(a.original_trace) {
+            return fault(F_SYNTAX, 0, 0, "7", "the original trace number is not 15 digits");
+        }
+        if a.original_dfi.len != 8 || !digits_ok(a.original_dfi) {
+            return fault(F_SYNTAX, 0, 0, "7", "the original DFI number is not 8 digits");
+        }
+        return check_ach_text(a.corrected_data, 29, "7");
+    }
+    if a.kind == 99 {
+        if !return_code_ok(a.return_code) {
+            return fault(F_SYNTAX, 0, 0, "7", "the return code is not in the return reason list");
+        }
+        if a.original_trace.len != 15 || !digits_ok(a.original_trace) {
+            return fault(F_SYNTAX, 0, 0, "7", "the original trace number is not 15 digits");
+        }
+        if a.original_dfi.len != 8 || !digits_ok(a.original_dfi) {
+            return fault(F_SYNTAX, 0, 0, "7", "the original DFI number is not 8 digits");
+        }
+        if a.death_month > 0 || a.death_day > 0 || a.death_year > 0 {
+            if a.death_year < 2000 || a.death_year > 2099
+               || !finance::date_ok(a.death_year as i64, a.death_month as i64, a.death_day as i64) {
+                return fault(F_DATE, 0, 0, "7", "the date of death is not a civil date in 2000 to 2099");
+            }
+        }
+        return check_ach_text(a.addenda_information, 44, "7");
+    }
+    return fault(F_UNKNOWN_TAG, 0, 0, "7", "the addenda kind is not 5, 98 or 99");
+}
+
 // write_ach_addenda writes record 7. The sequence counts the addenda
 // of one entry from one. The entry sequence is the last seven digits
-// of the trace number of the entry.
+// of the trace number of the entry. A notice of change and a return
+// carry their own layouts and no sequence.
 fn write_ach_addenda(out: u8[>..]&, a: AchAddenda, seq: i64, trace_number: const u8[:]) -> Fault {
     out.push('7');
+    if a.kind == 98 {
+        put(out, "98");
+        let f = put_text(out, a.change_code, 3, "7");
+        if f.kind != F_NONE { return f; }
+        let f2 = put_text(out, a.original_trace, 15, "7");
+        if f2.kind != F_NONE { return f2; }
+        put(out, "      ");
+        let f3 = put_text(out, a.original_dfi, 8, "7");
+        if f3.kind != F_NONE { return f3; }
+        let f4 = put_text(out, a.corrected_data, 29, "7");
+        if f4.kind != F_NONE { return f4; }
+        put(out, "      ");
+        put(out, "         ");
+        let f5 = put_text(out, trace_number, 15, "7");
+        if f5.kind != F_NONE { return f5; }
+        return no_fault();
+    }
+    if a.kind == 99 {
+        put(out, "99");
+        let f = put_text(out, a.return_code, 3, "7");
+        if f.kind != F_NONE { return f; }
+        let f2 = put_text(out, a.original_trace, 15, "7");
+        if f2.kind != F_NONE { return f2; }
+        if a.death_year > 0 {
+            let f3 = put_date6(out, a.death_year, a.death_month, a.death_day, "7");
+            if f3.kind != F_NONE { return f3; }
+        } else {
+            put(out, "      ");
+        }
+        let f4 = put_text(out, a.original_dfi, 8, "7");
+        if f4.kind != F_NONE { return f4; }
+        let f5 = put_text(out, a.addenda_information, 44, "7");
+        if f5.kind != F_NONE { return f5; }
+        let f6 = put_text(out, trace_number, 15, "7");
+        if f6.kind != F_NONE { return f6; }
+        return no_fault();
+    }
     put(out, "05");
     let f = put_text(out, a.text, 80, "7");
     if f.kind != F_NONE { return f; }
@@ -502,7 +602,8 @@ fn write_ach(h: AchFileHeader, batches: AchBatch[>..]&, entries: AchEntry[>..]&,
                 return fault(F_LIMIT, 0, 0, "6", "the addenda ranges of the entries do not follow each other");
             }
             cursor += e.addenda_count as i64;
-            let ef = check_entry(e, b.odfi_id, b.service_class, b.sec_code, is_reversal(b.description));
+            let add_max = entry_addenda_max(b.sec_code, e, addenda);
+            let ef = check_entry(e, b.odfi_id, b.service_class, b.sec_code, is_reversal(b.description), add_max);
             if ef.kind != F_NONE { return ef; }
             if i > b.entry_start && !trace_after(e.trace_number, entries[i - 1].trace_number) {
                 return fault(F_TOTAL, 0, 0, "6", "the trace numbers of the batch do not ascend");
@@ -524,8 +625,11 @@ fn write_ach(h: AchFileHeader, batches: AchBatch[>..]&, entries: AchEntry[>..]&,
             }
             var a = e.addenda_start;
             while a < e.addenda_start + e.addenda_count {
-                let af = check_ach_text(addenda[a].text, 80, "7");
+                let af = check_ach_addenda(addenda[a]);
                 if af.kind != F_NONE { return af; }
+                if addenda[a].kind != addenda[e.addenda_start].kind {
+                    return fault(F_SYNTAX, 0, 0, "7", "an entry mixes addenda of two kinds");
+                }
                 a += 1;
             }
             i += 1;
@@ -584,7 +688,7 @@ fn write_ach(h: AchFileHeader, batches: AchBatch[>..]&, entries: AchEntry[>..]&,
         put_rec(body);
         q += 1;
     }
-    let ff = write_ach_file_control(body, batches, total_count, total_hash, total_debit, total_credit, blocks);
+    let ff = write_ach_file_control(body, batches.len, total_count, total_hash, total_debit, total_credit, blocks);
     if ff.kind != F_NONE { return ff; }
     put_rec(body);
     let fill = blocks * 10 - records;
@@ -597,7 +701,7 @@ fn write_ach(h: AchFileHeader, batches: AchBatch[>..]&, entries: AchEntry[>..]&,
 // batch_totals gives the computed values of one batch: the count of
 // the entries and the addenda, the hash, the debit total and the
 // credit total. The caller checked the codes and the routing numbers.
-fn batch_totals(b: AchBatch, entries: AchEntry[>..]&) -> i64, i64, i64, i64 {
+fn batch_totals<B, E>(b: B, entries: E[>..]&) -> i64, i64, i64, i64 {
     var count: i64 = 0;
     var hash: i64 = 0;
     var debit: i64 = 0;
@@ -644,10 +748,10 @@ fn write_ach_batch_control(out: u8[>..]&, b: AchBatch, entries: AchEntry[>..]&) 
 
 // write_ach_file_control writes record 9 from the totals of the whole
 // file.
-fn write_ach_file_control(out: u8[>..]&, batches: AchBatch[>..]&, total_count: i64,
+fn write_ach_file_control(out: u8[>..]&, batch_count: i64, total_count: i64,
                           total_hash: i64, total_debit: i64, total_credit: i64, blocks: i64) -> Fault {
     out.push('9');
-    let f = put_num(out, batches.len, 6, "9");
+    let f = put_num(out, batch_count, 6, "9");
     if f.kind != F_NONE { return f; }
     let f2 = put_num(out, blocks, 6, "9");
     if f2.kind != F_NONE { return f2; }

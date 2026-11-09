@@ -56,6 +56,77 @@ fn country_ok(s: const u8[:]) -> bool {
     return true;
 }
 
+// currency_code_ok tells whether a text is an ISO currency code:
+// three capital letters.
+fn currency_code_ok(s: const u8[:]) -> bool {
+    if s.len != 3 { return false; }
+    var i: i64 = 0;
+    while i < 3 {
+        if s[i] < 'A' || s[i] > 'Z' { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+// branch_country_ok tells whether a text is a branch country code of
+// an IAT addenda: two or three capital letters or digits.
+fn branch_country_ok(s: const u8[:]) -> bool {
+    if s.len != 2 && s.len != 3 { return false; }
+    var i: i64 = 0;
+    while i < s.len {
+        let c = s[i];
+        if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+// fx_indicator_ok tells whether a text is a foreign exchange
+// indicator of an IAT batch.
+fn fx_indicator_ok(s: const u8[:]) -> bool {
+    return s == "FV" || s == "VF" || s == "FF";
+}
+
+// noc_code_ok tells whether a text is a notice of change code of the
+// list: C01 to C09, C13, C14 and C61 to C69.
+fn noc_code_ok(s: const u8[:]) -> bool {
+    if s.len != 3 { return false; }
+    if s[0] != 'C' { return false; }
+    if !(s[1] >= '0' && s[1] <= '6') { return false; }
+    if s[1] == '0' { return s[2] >= '1' && s[2] <= '9'; }
+    if s[1] == '1' { return s[2] == '3' || s[2] == '4'; }
+    if s[1] == '6' { return s[2] >= '1' && s[2] <= '9'; }
+    return false;
+}
+
+// return_code_ok tells whether a text is a return reason code of the
+// list of the package: R01 to R47, R50 to R53, R61, R62, R67 to R77,
+// R80 to R85 and R90.
+fn return_code_ok(s: const u8[:]) -> bool {
+    if s.len != 3 { return false; }
+    if s[0] != 'R' { return false; }
+    if !(s[1] >= '0' && s[1] <= '9') { return false; }
+    if !(s[2] >= '0' && s[2] <= '9') { return false; }
+    let v = (s[1] - '0') as i64 * 10 + (s[2] - '0') as i64;
+    if v <= 47 { return v >= 1; }
+    if v <= 53 { return v >= 50; }
+    if v == 61 || v == 62 { return true; }
+    if v <= 77 { return v >= 67; }
+    if v <= 85 { return v >= 80; }
+    return v == 90;
+}
+
+// txn_type_code_ok tells whether a text is a transaction type code of
+// the list of addenda 10.
+fn txn_type_code_ok(s: const u8[:]) -> bool {
+    if s == "ANN" || s == "BUS" || s == "DEP" || s == "LOA" { return true; }
+    if s == "MIS" || s == "MOR" || s == "PEN" || s == "REM" { return true; }
+    if s == "RLS" || s == "SAL" || s == "TAX" || s == "PAY" { return true; }
+    if s == "ARC" || s == "BOC" || s == "IAT" || s == "MTE" { return true; }
+    if s == "POP" || s == "POS" || s == "RCK" || s == "SHR" { return true; }
+    return s == "TEL" || s == "WEB";
+}
+
 // hex_lower tells whether a byte is a lowercase hexadecimal digit.
 fn hex_lower(c: u8) -> bool {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
