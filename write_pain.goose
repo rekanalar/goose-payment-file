@@ -16,6 +16,8 @@ import model;
 import charset;
 import control;
 import enums;
+import model_party;
+import write_party;
 
 // PainWriteOptions holds the switches of the writer.
 struct PainWriteOptions {
@@ -71,14 +73,12 @@ fn text_leaf(out: u8[>..]&, tag: const u8[:], text: const u8[:], max: i64, requi
 }
 
 // party writes a party element with its name. The name limit is the
-// limit of the EPC rulebook, not the one of the schema.
+// limit of the EPC rulebook, not the one of the schema. The party holds
+// no address and no identification.
 fn party(out: u8[>..]&, tag: const u8[:], name: const u8[:], depth: i64,
          opts: PainWriteOptions, lim: Limits&) -> Fault {
-    open(out, tag, depth, opts);
-    let f = text_leaf(out, "Nm", name, 70, true, depth + 1, opts, lim);
-    if f.kind != F_NONE { return f; }
-    close(out, tag, depth, opts);
-    return no_fault();
+    var none = new_party_detail();
+    return party_full(out, tag, name, 70, none, true, depth, opts, lim);
 }
 
 // account writes an account element with an IBAN that passes the check
@@ -215,16 +215,19 @@ fn write_pain001(header: GrpHeader, payments: PaymentInfo[>..]&, items: CreditTr
     // Check the whole message before the first byte goes out.
     let total, sf = sum_range(items, 0, items.len);
     if sf.kind != F_NONE { return sf; }
-    let gf = write_group(out, "pain.001.001.03", "CstmrCdtTrfInitn", header, items.len, total, items[0].amount.code, opts, lim);
+    // Write into a scratch buffer, so a late fault leaves out untouched.
+    var body: u8[>..] = [];
+    let gf = write_group(body, "pain.001.001.03", "CstmrCdtTrfInitn", header, items.len, total, items[0].amount.code, opts, lim);
     if gf.kind != F_NONE { return gf; }
     var p: i64 = 0;
     while p < payments.len {
-        let pf = write_pmt_inf(out, payments[p], items, opts, lim);
+        let pf = write_pmt_inf(body, payments[p], items, opts, lim);
         if pf.kind != F_NONE { return pf; }
         p += 1;
     }
-    close(out, "CstmrCdtTrfInitn", 1, opts);
-    close(out, "Document", 0, opts);
+    close(body, "CstmrCdtTrfInitn", 1, opts);
+    close(body, "Document", 0, opts);
+    put(out, body);
     return no_fault();
 }
 
@@ -261,11 +264,13 @@ fn write_pmt_inf(out: u8[>..]&, pay: PaymentInfo, items: CreditTransfer[>..]&,
     leaf(out, "CtrlSum", cs, 3, opts);
     f = date_leaf(out, "ReqdExctnDt", pay.execution_year, pay.execution_month, pay.execution_day, 3, opts);
     if f.kind != F_NONE { return f; }
-    f = party(out, "Dbtr", pay.debtor_name, 3, opts, lim);
+    f = party_full(out, "Dbtr", pay.debtor_name, MAX_70, pay.debtor_detail, true, 3, opts, lim);
     if f.kind != F_NONE { return f; }
     f = account(out, "DbtrAcct", pay.debtor_iban, 3, opts, lim);
     if f.kind != F_NONE { return f; }
     f = agent(out, "DbtrAgt", pay.debtor_bic, 3, opts, lim);
+    if f.kind != F_NONE { return f; }
+    f = party_full(out, "UltmtDbtr", pay.ultimate_debtor_name, MAX_70, pay.ultimate_debtor_detail, false, 3, opts, lim);
     if f.kind != F_NONE { return f; }
     if pay.charge_bearer.len > 0 {
         if !charge_bearer_ok(pay.charge_bearer) { return fault(F_SYNTAX, 0, 0, "ChrgBr", "the charge bearer is not DEBT, CRED, SHAR or SLEV"); }
@@ -298,13 +303,17 @@ fn write_item(out: u8[>..]&, t: CreditTransfer, opts: PainWriteOptions, lim: Lim
     f = instd_amt(out, t.amount.minor, t.amount.code, 5, opts);
     if f.kind != F_NONE { return f; }
     close(out, "Amt", 4, opts);
+    f = party_full(out, "UltmtDbtr", t.ultimate_debtor_name, MAX_70, t.ultimate_debtor_detail, false, 4, opts, lim);
+    if f.kind != F_NONE { return f; }
     if t.creditor_bic.len > 0 {
         f = agent(out, "CdtrAgt", t.creditor_bic, 4, opts, lim);
         if f.kind != F_NONE { return f; }
     }
-    f = party(out, "Cdtr", t.creditor_name, 4, opts, lim);
+    f = party_full(out, "Cdtr", t.creditor_name, MAX_70, t.creditor_detail, true, 4, opts, lim);
     if f.kind != F_NONE { return f; }
     f = account(out, "CdtrAcct", t.creditor_iban, 4, opts, lim);
+    if f.kind != F_NONE { return f; }
+    f = party_full(out, "UltmtCdtr", t.ultimate_creditor_name, MAX_70, t.ultimate_creditor_detail, false, 4, opts, lim);
     if f.kind != F_NONE { return f; }
     if t.purpose.len > 0 {
         open(out, "Purp", 4, opts);
@@ -312,19 +321,16 @@ fn write_item(out: u8[>..]&, t: CreditTransfer, opts: PainWriteOptions, lim: Lim
         if f.kind != F_NONE { return f; }
         close(out, "Purp", 4, opts);
     }
-    if t.remittance.len > 0 || t.structured_ref.len > 0 {
+    let has_ref = t.structured_ref.len > 0 || t.structured_type.len > 0 || t.structured_issuer.len > 0;
+    if t.remittance.len > 0 || has_ref {
         open(out, "RmtInf", 4, opts);
         if t.remittance.len > 0 {
             f = text_leaf(out, "Ustrd", t.remittance, 140, true, 5, opts, lim);
             if f.kind != F_NONE { return f; }
         }
-        if t.structured_ref.len > 0 {
-            open(out, "Strd", 5, opts);
-            open(out, "CdtrRefInf", 6, opts);
-            f = text_leaf(out, "Ref", t.structured_ref, 35, true, 7, opts, lim);
+        if has_ref {
+            f = write_cdtr_ref(out, t, 5, opts, lim);
             if f.kind != F_NONE { return f; }
-            close(out, "CdtrRefInf", 6, opts);
-            close(out, "Strd", 5, opts);
         }
         close(out, "RmtInf", 4, opts);
     }

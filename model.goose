@@ -9,6 +9,7 @@ namespace payment_file;
 
 import std;
 import finance from "rekanalar/goose-finance@v0.1.0";
+import model_party;
 
 // GrpHeader holds the facts of the group header.
 struct GrpHeader {
@@ -38,6 +39,9 @@ struct PaymentInfo {
     debtor_name: const u8[:],
     debtor_iban: const u8[:],
     debtor_bic: const u8[:],
+    debtor_detail: PartyDetail,
+    ultimate_debtor_name: const u8[:],
+    ultimate_debtor_detail: PartyDetail,
     execution_year: i32,
     execution_month: i32,
     execution_day: i32,
@@ -55,8 +59,15 @@ struct CreditTransfer {
     creditor_name: const u8[:],
     creditor_iban: const u8[:],
     creditor_bic: const u8[:],
+    creditor_detail: PartyDetail,
+    ultimate_creditor_name: const u8[:],
+    ultimate_creditor_detail: PartyDetail,
+    ultimate_debtor_name: const u8[:],
+    ultimate_debtor_detail: PartyDetail,
     purpose: const u8[:],
     remittance: const u8[:],
+    structured_type: const u8[:],
+    structured_issuer: const u8[:],
     structured_ref: const u8[:],
 }
 
@@ -80,6 +91,8 @@ fn new_payment() -> PaymentInfo {
     return PaymentInfo {
         id: "", method: "", batch_booking: false, has_batch_booking: false, charge_bearer: "",
         debtor_name: "", debtor_iban: "", debtor_bic: "",
+        debtor_detail: new_party_detail(), ultimate_debtor_name: "",
+        ultimate_debtor_detail: new_party_detail(),
         execution_year: 0, execution_month: 0, execution_day: 0, has_execution_date: false,
         item_start: 0, item_count: 0,
     };
@@ -91,7 +104,10 @@ fn new_transfer() -> CreditTransfer {
         end_to_end_id: "", instruction_id: "",
         amount: finance::Money { minor: 0, code: "" },
         creditor_name: "", creditor_iban: "", creditor_bic: "",
+        creditor_detail: new_party_detail(), ultimate_creditor_name: "",
+        ultimate_creditor_detail: new_party_detail(),
+        ultimate_debtor_name: "", ultimate_debtor_detail: new_party_detail(),
         purpose: "", remittance: "",
-        structured_ref: "",
+        structured_type: "", structured_issuer: "", structured_ref: "",
     };
 }

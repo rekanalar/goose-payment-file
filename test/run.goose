@@ -255,6 +255,24 @@ fn replace_all(src: u8[>..]&, pattern: const u8[:], text: const u8[:], dst: u8[>
     }
 }
 
+// party_header gives the group header of the party tests.
+fn party_header() -> payment_file::GrpHeader {
+    var h = payment_file::new_header();
+    h.message_id = "MSG-2026-0001";
+    h.has_creation = true;
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    h.creation_minutes = 14 * 60 + 30; h.creation_offset = 60;
+    h.initiator = "Acme Trading Ltd";
+    return h;
+}
+
+// cat joins three texts into a builder.
+fn cat(a: const u8[:], b: const u8[:], c: const u8[:], out: u8[>..]&) {
+    put(out, a);
+    put(out, b);
+    put(out, c);
+}
+
 // read_fault reads a document and gives the fault of the reader.
 fn read_fault(doc: const u8[:], skip: bool, lim: payment_file::Limits&) -> i32 {
     var ropts = payment_file::PainOptions { skip_control_sum_check: skip, check_iban: true, epc_charset: true };
@@ -737,6 +755,500 @@ fn test_blocks_tile_items() {
     assert(payment_file::write_pain008(h, blocks, items, wopts, lim, o2).kind == payment_file::F_NONE);
 }
 
+const OLD_OUTPUT: const u8[:] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Document xmlns=\"urn:iso:std:iso:20022:tech:xsd:pain.001.001.03\"><CstmrCdtTrfInitn><GrpHdr><MsgId>MSG-2026-0001</MsgId><CreDtTm>2026-11-09T14:30:00+01:00</CreDtTm><NbOfTxs>2</NbOfTxs><CtrlSum>103.00</CtrlSum><InitgPty><Nm>Acme Trading Ltd</Nm></InitgPty></GrpHdr><PmtInf><PmtInfId>PMT-1</PmtInfId><PmtMtd>TRF</PmtMtd><BtchBookg>false</BtchBookg><NbOfTxs>2</NbOfTxs><CtrlSum>103.00</CtrlSum><ReqdExctnDt>2026-12-01</ReqdExctnDt><Dbtr><Nm>Acme Trading Ltd</Nm></Dbtr><DbtrAcct><Id><IBAN>NL91ABNA0417164300</IBAN></Id></DbtrAcct><DbtrAgt><FinInstnId></FinInstnId></DbtrAgt><ChrgBr>SLEV</ChrgBr><CdtTrfTxInf><PmtId><InstrId>INSTR-1</InstrId><EndToEndId>E2E-1</EndToEndId></PmtId><Amt><InstdAmt Ccy=\"EUR\">100.50</InstdAmt></Amt><Cdtr><Nm>Creditor One</Nm></Cdtr><CdtrAcct><Id><IBAN>DE89370400440532013000</IBAN></Id></CdtrAcct><RmtInf><Ustrd>Invoice 42</Ustrd></RmtInf></CdtTrfTxInf><CdtTrfTxInf><PmtId><EndToEndId>E2E-2</EndToEndId></PmtId><Amt><InstdAmt Ccy=\"EUR\">2.50</InstdAmt></Amt><Cdtr><Nm>Creditor Two AG</Nm></Cdtr><CdtrAcct><Id><IBAN>CH9300762011623852957</IBAN></Id></CdtrAcct><Purp><Cd>SALA</Cd></Purp><RmtInf><Strd><CdtrRefInf><Ref>RF18539007547034</Ref></CdtrRefInf></Strd></RmtInf></CdtTrfTxInf></PmtInf></CstmrCdtTrfInitn></Document>";
+
+// The party fields of the model. The builder fills every new field of
+// the debtor, the creditor and both ultimate parties.
+fn party_full_model(pays: payment_file::PaymentInfo[>..]&, items: payment_file::CreditTransfer[>..]&) {
+    var a = payment_file::new_address();
+    a.department = "Sales";
+    a.sub_department = "North";
+    a.street_name = "Main Street";
+    a.building_number = "12";
+    a.post_code = "12345";
+    a.town_name = "Amsterdam";
+    a.country_subdivision = "Noord-Holland";
+    a.country = "NL";
+    a.line_1 = "Building A";
+    a.line_2 = "Floor 3";
+    var o = payment_file::new_other_id();
+    o.id = "NL-ORG-1";
+    o.scheme_code = "BANK";
+    o.issuer = "Acme Bank";
+    var pid = payment_file::new_party_id();
+    pid.kind = payment_file::PARTY_ORG;
+    pid.bic = "ABNANL2A";
+    pid.other = o;
+    pays[0].debtor_detail.address = a;
+    pays[0].debtor_detail.id = pid;
+    pays[0].ultimate_debtor_name = "Ultimate Owner Ltd";
+    var ua = payment_file::new_address();
+    ua.street_name = "Owner Way";
+    ua.town_name = "Utrecht";
+    ua.country = "NL";
+    pays[0].ultimate_debtor_detail.address = ua;
+    var uo = payment_file::new_other_id();
+    uo.id = "NL-OWNER-9";
+    var upid = payment_file::new_party_id();
+    upid.kind = payment_file::PARTY_PERSON;
+    upid.other = uo;
+    pays[0].ultimate_debtor_detail.id = upid;
+    items[0].creditor_detail.address = a;
+    items[0].creditor_detail.id = pid;
+    items[0].ultimate_creditor_name = "Ultimate Payee Inc";
+    items[0].ultimate_creditor_detail.address = ua;
+    items[0].ultimate_creditor_detail.id = upid;
+    items[0].ultimate_debtor_name = "Ultimate Origin Ltd";
+    items[0].ultimate_debtor_detail.address = ua;
+    items[0].ultimate_debtor_detail.id = upid;
+    items[0].structured_type = "SCOR";
+    items[0].structured_issuer = "Acme Bank";
+    items[0].structured_ref = "RF18539007547034";
+}
+
+// party_sample writes a document with every new field set.
+fn party_sample(out: u8[>..]&) -> i32 {
+    var items: payment_file::CreditTransfer[>..] = [];
+    var t1 = payment_file::new_transfer();
+    t1.end_to_end_id = "E2E-1";
+    let m1, ok1 = finance::money(10050, "EUR");
+    if !ok1 { return -1; }
+    t1.amount = m1;
+    t1.creditor_name = "Creditor One";
+    t1.creditor_iban = "DE89370400440532013000";
+    t1.remittance = "Invoice 42";
+    items.push(t1);
+    var t2 = payment_file::new_transfer();
+    t2.end_to_end_id = "E2E-2";
+    let m2, ok2 = finance::money(250, "EUR");
+    if !ok2 { return -1; }
+    t2.amount = m2;
+    t2.creditor_name = "Creditor Two AG";
+    t2.creditor_iban = "CH9300762011623852957";
+    items.push(t2);
+    var pays: payment_file::PaymentInfo[>..] = [];
+    var p1 = payment_file::new_payment();
+    p1.id = "PMT-1";
+    p1.charge_bearer = "SLEV";
+    p1.debtor_name = "Acme Trading Ltd";
+    p1.debtor_iban = "NL91ABNA0417164300";
+    p1.execution_year = 2026; p1.execution_month = 12; p1.execution_day = 1;
+    p1.has_execution_date = true;
+    p1.item_start = 0;
+    p1.item_count = items.len as i32;
+    pays.push(p1);
+    party_full_model(pays, items);
+    var h = payment_file::new_header();
+    h.message_id = "MSG-2026-0001";
+    h.has_creation = true;
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    h.creation_minutes = 14 * 60 + 30;
+    h.creation_offset = 60;
+    h.initiator = "Acme Trading Ltd";
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var lim = payment_file::default_limits();
+    return payment_file::write_pain001(h, pays, items, wopts, lim, out).kind;
+}
+
+// party_read reads a document and gives the fault kind.
+fn party_read(doc: const u8[:], pays: payment_file::PaymentInfo[>..]&,
+              items: payment_file::CreditTransfer[>..]&, buf: u8[>..]&) -> i32 {
+    var h = payment_file::new_header();
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    var lim = payment_file::default_limits();
+    return payment_file::parse_pain001(doc, lim, ropts, h, pays, items, buf).kind;
+}
+
+// The new fields survive a write and a read.
+fn test_party_roundtrip() {
+    var out: u8[>..] = [];
+    assert(party_sample(out) == 0);
+    var pays: payment_file::PaymentInfo[>..] = [];
+    var items: payment_file::CreditTransfer[>..] = [];
+    var buf: u8[>..] = [];
+    assert(party_read(out[..], pays, items, buf) == 0);
+    assert(pays.len == 1 && items.len == 2);
+    let a = pays[0].debtor_detail.address;
+    assert(a.department == "Sales" && a.sub_department == "North");
+    assert(a.street_name == "Main Street" && a.building_number == "12");
+    assert(a.post_code == "12345" && a.town_name == "Amsterdam");
+    assert(a.country_subdivision == "Noord-Holland" && a.country == "NL");
+    assert(a.line_1 == "Building A" && a.line_2 == "Floor 3");
+    let pid = pays[0].debtor_detail.id;
+    assert(pid.kind == payment_file::PARTY_ORG && pid.bic == "ABNANL2A");
+    assert(pid.other.id == "NL-ORG-1" && pid.other.scheme_code == "BANK");
+    assert(pid.other.issuer == "Acme Bank");
+    assert(pays[0].ultimate_debtor_name == "Ultimate Owner Ltd");
+    assert(pays[0].ultimate_debtor_detail.address.town_name == "Utrecht");
+    assert(pays[0].ultimate_debtor_detail.id.kind == payment_file::PARTY_PERSON);
+    assert(pays[0].ultimate_debtor_detail.id.other.id == "NL-OWNER-9");
+    assert(items[0].creditor_detail.address.country == "NL");
+    assert(items[0].ultimate_creditor_name == "Ultimate Payee Inc");
+    assert(items[0].ultimate_creditor_detail.address.street_name == "Owner Way");
+    assert(items[0].ultimate_debtor_name == "Ultimate Origin Ltd");
+    assert(items[0].ultimate_debtor_detail.address.country == "NL");
+    assert(items[0].structured_type == "SCOR" && items[0].structured_issuer == "Acme Bank");
+    assert(items[0].structured_ref == "RF18539007547034");
+    // The unstructured and the structured remittance sit together.
+    assert(items[0].remittance == "Invoice 42");
+    // An item without the new fields holds nothing.
+    assert(items[1].ultimate_creditor_name.len == 0);
+    assert(items[1].creditor_detail.id.kind == payment_file::PARTY_NONE);
+}
+
+// A file with many parties and many items keeps every text valid. The
+// texts of the reader point into one buffer. The buffer must grow
+// without moving the texts.
+fn test_party_many() {
+    var items: payment_file::CreditTransfer[>..] = [];
+    var i: i64 = 0;
+    while i < 200 {
+        var t = payment_file::new_transfer();
+        t.end_to_end_id = "E2E-LONG";
+        let m, ok = finance::money(100 + i, "EUR");
+        assert(ok);
+        t.amount = m;
+        t.creditor_name = "Creditor Number";
+        t.creditor_iban = "DE89370400440532013000";
+        t.remittance = "Invoice with a long text 1234567890";
+        items.push(t);
+        i += 1;
+    }
+    var pays: payment_file::PaymentInfo[>..] = [];
+    var p = payment_file::new_payment();
+    p.id = "PMT-1";
+    p.debtor_name = "Acme Trading Ltd";
+    p.debtor_iban = "NL91ABNA0417164300";
+    p.execution_year = 2026; p.execution_month = 12; p.execution_day = 1;
+    p.has_execution_date = true;
+    p.item_start = 0;
+    p.item_count = items.len as i32;
+    pays.push(p);
+    var a = payment_file::new_address();
+    a.street_name = "Main Street";
+    a.town_name = "Amsterdam";
+    a.country = "NL";
+    p.debtor_detail.address = a;
+    pays[0].debtor_detail.address = a;
+    var h = party_header();
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var lim = payment_file::default_limits();
+    var out: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, out).kind == 0);
+    var rp: payment_file::PaymentInfo[>..] = [];
+    var ri: payment_file::CreditTransfer[>..] = [];
+    var buf: u8[>..] = [];
+    assert(party_read(out[..], rp, ri, buf) == 0);
+    assert(rp.len == 1 && ri.len == 200);
+    assert(rp[0].debtor_detail.address.town_name == "Amsterdam");
+    var k: i64 = 0;
+    while k < 200 {
+        assert(ri[k].end_to_end_id == "E2E-LONG");
+        assert(ri[k].creditor_name == "Creditor Number");
+        assert(ri[k].remittance == "Invoice with a long text 1234567890");
+        k += 1;
+    }
+}
+
+// The elements follow the order of the schema.
+fn test_party_order() {
+    var out: u8[>..] = [];
+    assert(party_sample(out) == 0);
+    // The debtor: the name, the address, the identification.
+    let dbtr = find(out, "<Dbtr>");
+    assert(dbtr >= 0);
+    let nm = find(out, "<Dbtr><Nm>");
+    let adr = find(out, "<PstlAdr>");
+    let id = find(out, "<Dbtr><Nm>Acme Trading Ltd</Nm><PstlAdr>");
+    assert(nm >= 0 && adr > nm && id >= 0);
+    // The ultimate debtor of the block sits after the debtor agent.
+    assert(find(out, "<DbtrAgt>") < find(out, "<UltmtDbtr>"));
+    assert(find(out, "<UltmtDbtr>") < find(out, "<ChrgBr>"));
+    // The ultimate creditor of the item sits after the creditor account.
+    assert(find(out, "<CdtrAcct>") < find(out, "<UltmtCdtr>"));
+    assert(find(out, "<UltmtCdtr>") < find(out, "<RmtInf>"));
+    // The type of the creditor reference sits before the reference.
+    assert(find(out, "<Tp><CdOrPrtry><Cd>SCOR</Cd></CdOrPrtry><Issr>Acme Bank</Issr></Tp>") >= 0);
+    assert(find(out, "<CdtrRefInf><Tp><CdOrPrtry><Cd>SCOR</Cd></CdOrPrtry><Issr>Acme Bank</Issr></Tp><Ref>RF18539007547034</Ref></CdtrRefInf>") >= 0);
+    // The address holds its fields in the order of the schema.
+    let adr2 = find(out, "<PstlAdr>");
+    let dept = find(out, "<Dept>");
+    let st = find(out, "<StrtNm>");
+    let ctry = find(out, "<Ctry>");
+    let line = find(out, "<AdrLine>");
+    assert(dept > adr2 && st > dept && ctry > st && line > ctry);
+}
+
+// A model without the new fields writes the same bytes as before.
+fn test_party_old_output() {
+    var out: u8[>..] = [];
+    var wopts = payment_file::PainWriteOptions { epc_charset: false, indent: false };
+    assert(sample(wopts, out) == 0);
+    assert(out[..] == OLD_OUTPUT);
+}
+
+// A text one byte over its limit is a fault on both sides.
+fn test_party_overlength() {
+    var long70: u8[>..] = [];
+    var i: i64 = 0;
+    while i < 71 { long70.push('A'); i += 1; }
+    let l70 = long70[..];
+    var long35: u8[>..] = [];
+    i = 0;
+    while i < 36 { long35.push('B'); i += 1; }
+    let l35 = long35[..];
+    var long16: u8[>..] = [];
+    i = 0;
+    while i < 17 { long16.push('C'); i += 1; }
+    let l16 = long16[..];
+    var long4: u8[>..] = [];
+    i = 0;
+    while i < 5 { long4.push('D'); i += 1; }
+    let l4 = long4[..];
+    // The street name of the debtor.
+    var pays: payment_file::PaymentInfo[>..] = [];
+    var items: payment_file::CreditTransfer[>..] = [];
+    var out: u8[>..] = [];
+    assert(party_sample(out) == 0);
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var lim = payment_file::default_limits();
+    var h = party_header();
+    // The writer refuses a long street name.
+    var a = payment_file::new_address();
+    a.street_name = l70;
+    a.country = "NL";
+    pays.push(payment_file::new_payment());
+    pays[0].id = "PMT-1";
+    pays[0].debtor_name = "Acme Trading Ltd";
+    pays[0].debtor_iban = "NL91ABNA0417164300";
+    pays[0].debtor_detail.address = a;
+    pays[0].execution_year = 2026; pays[0].execution_month = 12; pays[0].execution_day = 1;
+    pays[0].has_execution_date = true;
+    var t = payment_file::new_transfer();
+    t.end_to_end_id = "E2E-1";
+    let m, ok = finance::money(100, "EUR");
+    assert(ok);
+    t.amount = m;
+    t.creditor_name = "Creditor One";
+    t.creditor_iban = "DE89370400440532013000";
+    items.push(t);
+    pays[0].item_start = 0;
+    pays[0].item_count = 1;
+    var o1: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, o1).kind == payment_file::F_LIMIT);
+    assert(o1.len == 0);
+    // The reader refuses a long street name.
+    var doc: u8[>..] = [];
+    var pat: u8[>..] = [];
+    cat("<StrtNm>", l70, "</StrtNm>", pat);
+    replace_all(out, "<StrtNm>Main Street</StrtNm>", pat[..], doc);
+    var rp: payment_file::PaymentInfo[>..] = [];
+    var ri: payment_file::CreditTransfer[>..] = [];
+    var rbuf: u8[>..] = [];
+    assert(party_read(doc[..], rp, ri, rbuf) == payment_file::F_LIMIT);
+    // The writer refuses a long town name, a long building number and a long scheme code.
+    var a2 = payment_file::new_address();
+    a2.town_name = l35;
+    pays[0].debtor_detail.address = a2;
+    var o2: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, o2).kind == payment_file::F_LIMIT);
+    assert(o2.len == 0);
+    var a3 = payment_file::new_address();
+    a3.building_number = l16;
+    pays[0].debtor_detail.address = a3;
+    var o3: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, o3).kind == payment_file::F_LIMIT);
+    assert(o3.len == 0);
+    var o4 = payment_file::new_other_id();
+    o4.id = "X";
+    o4.scheme_code = l4;
+    var pid = payment_file::new_party_id();
+    pid.kind = payment_file::PARTY_ORG;
+    pid.other = o4;
+    pays[0].debtor_detail.address = payment_file::new_address();
+    pays[0].debtor_detail.id = pid;
+    var o5: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, o5).kind == payment_file::F_LIMIT);
+    assert(o5.len == 0);
+}
+
+// The texts are escaped and the EPC set holds them.
+fn test_party_escape() {
+    var pays: payment_file::PaymentInfo[>..] = [];
+    var items: payment_file::CreditTransfer[>..] = [];
+    var out: u8[>..] = [];
+    assert(party_sample(out) == 0);
+    var a = payment_file::new_address();
+    a.street_name = "Main <Street> & Co";
+    pays.push(payment_file::new_payment());
+    pays[0].id = "PMT-1";
+    pays[0].debtor_name = "Acme Trading Ltd";
+    pays[0].debtor_iban = "NL91ABNA0417164300";
+    pays[0].debtor_detail.address = a;
+    pays[0].execution_year = 2026; pays[0].execution_month = 12; pays[0].execution_day = 1;
+    pays[0].has_execution_date = true;
+    var t = payment_file::new_transfer();
+    t.end_to_end_id = "E2E-1";
+    let m, ok = finance::money(100, "EUR");
+    assert(ok);
+    t.amount = m;
+    t.creditor_name = "Creditor One";
+    t.creditor_iban = "DE89370400440532013000";
+    items.push(t);
+    pays[0].item_start = 0;
+    pays[0].item_count = 1;
+    var h = party_header();
+    var lim = payment_file::default_limits();
+    // Without the EPC set the markup characters are escaped.
+    var wopts = payment_file::PainWriteOptions { epc_charset: false, indent: false };
+    var o1: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, o1).kind == 0);
+    assert(find(o1, "<StrtNm>Main &lt;Street&gt; &amp; Co</StrtNm>") >= 0);
+    // With the EPC set the same text is refused.
+    var wopts2 = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var o2: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts2, lim, o2).kind == payment_file::F_CHARSET);
+    assert(o2.len == 0);
+}
+
+// The reader and the writer refuse the same bad values.
+fn test_party_refusals() {
+    var out: u8[>..] = [];
+    assert(party_sample(out) == 0);
+    var rp: payment_file::PaymentInfo[>..] = [];
+    var ri: payment_file::CreditTransfer[>..] = [];
+    var rbuf: u8[>..] = [];
+    // A lowercase country is a fault on both sides.
+    var doc: u8[>..] = [];
+    replace_all(out, "<Ctry>NL</Ctry>", "<Ctry>nl</Ctry>", doc);
+    assert(party_read(doc[..], rp, ri, rbuf) == payment_file::F_SYNTAX);
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var lim = payment_file::default_limits();
+    var h = party_header();
+    var pays: payment_file::PaymentInfo[>..] = [];
+    var items: payment_file::CreditTransfer[>..] = [];
+    var t = payment_file::new_transfer();
+    t.end_to_end_id = "E2E-1";
+    let m, ok = finance::money(100, "EUR");
+    assert(ok);
+    t.amount = m;
+    t.creditor_name = "Creditor One";
+    t.creditor_iban = "DE89370400440532013000";
+    items.push(t);
+    pays.push(payment_file::new_payment());
+    pays[0].id = "PMT-1";
+    pays[0].debtor_name = "Acme Trading Ltd";
+    pays[0].debtor_iban = "NL91ABNA0417164300";
+    pays[0].execution_year = 2026; pays[0].execution_month = 12; pays[0].execution_day = 1;
+    pays[0].has_execution_date = true;
+    pays[0].item_start = 0;
+    pays[0].item_count = 1;
+    var a = payment_file::new_address();
+    a.country = "nl";
+    pays[0].debtor_detail.address = a;
+    var o1: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, o1).kind == payment_file::F_SYNTAX);
+    assert(o1.len == 0);
+    // An unknown document type is a fault on both sides.
+    pays[0].debtor_detail.address = payment_file::new_address();
+    var doc2: u8[>..] = [];
+    replace_all(out, "<Cd>SCOR</Cd>", "<Cd>XXXX</Cd>", doc2);
+    assert(party_read(doc2[..], rp, ri, rbuf) == payment_file::F_SYNTAX);
+    items[0].structured_type = "XXXX";
+    var o2: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, o2).kind == payment_file::F_SYNTAX);
+    assert(o2.len == 0);
+    items[0].structured_type = "SCOR";
+    // An identification of an unknown kind is a fault.
+    var o3 = payment_file::new_other_id();
+    o3.id = "X";
+    var pid = payment_file::new_party_id();
+    pid.kind = 7;
+    pid.other = o3;
+    pays[0].debtor_detail.id = pid;
+    items[0].structured_type = "";
+    var o4: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, o4).kind == payment_file::F_SYNTAX);
+    assert(o4.len == 0);
+    // An ultimate party with an address and no name is a fault.
+    pays[0].debtor_detail.id = payment_file::new_party_id();
+    var a2 = payment_file::new_address();
+    a2.country = "NL";
+    pays[0].ultimate_debtor_detail.address = a2;
+    var o5: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, o5).kind == payment_file::F_SYNTAX);
+    assert(o5.len == 0);
+    pays[0].ultimate_debtor_detail = payment_file::new_party_detail();
+    // A scheme that holds a code and a proprietary text is a fault.
+    var o6 = payment_file::new_other_id();
+    o6.id = "X";
+    o6.scheme_code = "BANK";
+    o6.scheme_proprietary = "Other";
+    var pid2 = payment_file::new_party_id();
+    pid2.kind = payment_file::PARTY_ORG;
+    pid2.other = o6;
+    pays[0].debtor_detail.id = pid2;
+    var o7: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, o7).kind == payment_file::F_SYNTAX);
+    assert(o7.len == 0);
+    // The reader refuses a scheme that holds both.
+    var doc3: u8[>..] = [];
+    replace_all(out, "<SchmeNm><Cd>BANK</Cd></SchmeNm>", "<SchmeNm><Cd>BANK</Cd><Prtry>Other</Prtry></SchmeNm>", doc3);
+    assert(party_read(doc3[..], rp, ri, rbuf) == payment_file::F_SYNTAX);
+    // The reader refuses a party that holds both kinds.
+    var doc4: u8[>..] = [];
+    replace_all(out, "<PrvtId>", "<OrgId><Othr><Id>Z</Id></Othr></OrgId><PrvtId>", doc4);
+    assert(party_read(doc4[..], rp, ri, rbuf) == payment_file::F_SYNTAX);
+    // The reader refuses a second other identifier.
+    var doc5: u8[>..] = [];
+    replace_all(out, "<Othr><Id>NL-ORG-1</Id>", "<Othr><Id>NL-ORG-1</Id></Othr><Othr><Id>NL-ORG-2</Id>", doc5);
+    assert(party_read(doc5[..], rp, ri, rbuf) == payment_file::F_LIMIT);
+    // The reader refuses a third address line.
+    var doc6: u8[>..] = [];
+    replace_all(out, "<AdrLine>Building A</AdrLine><AdrLine>Floor 3</AdrLine>", "<AdrLine>One</AdrLine><AdrLine>Two</AdrLine><AdrLine>Three</AdrLine>", doc6);
+    assert(party_read(doc6[..], rp, ri, rbuf) == payment_file::F_LIMIT);
+    // The reader refuses a BIC that is not a BIC.
+    var doc7: u8[>..] = [];
+    replace_all(out, "<BICOrBEI>ABNANL2A</BICOrBEI>", "<BICOrBEI>abnanl2a</BICOrBEI>", doc7);
+    assert(party_read(doc7[..], rp, ri, rbuf) == payment_file::F_SYNTAX);
+    // An ultimate party with an address and no name is a fault on both sides.
+    var doc8: u8[>..] = [];
+    replace_all(out, "<UltmtDbtr><Nm>Ultimate Owner Ltd</Nm>", "<UltmtDbtr>", doc8);
+    assert(party_read(doc8[..], rp, ri, rbuf) == payment_file::F_SYNTAX);
+    pays[0].ultimate_debtor_name = "";
+    pays[0].ultimate_debtor_detail.address = a;
+    var o8: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, o8).kind == payment_file::F_SYNTAX);
+    assert(o8.len == 0);
+    // An identification that holds nothing is a fault on both sides.
+    var doc9: u8[>..] = [];
+    replace_all(out, "<Id><OrgId><BICOrBEI>ABNANL2A</BICOrBEI><Othr><Id>NL-ORG-1</Id><SchmeNm><Cd>BANK</Cd></SchmeNm><Issr>Acme Bank</Issr></Othr></OrgId></Id>",
+               "<Id><OrgId></OrgId></Id>", doc9);
+    assert(party_read(doc9[..], rp, ri, rbuf) == payment_file::F_SYNTAX);
+    var o9 = payment_file::new_other_id();
+    var pid3 = payment_file::new_party_id();
+    pid3.kind = payment_file::PARTY_ORG;
+    pid3.other = o9;
+    pays[0].debtor_detail.id = pid3;
+    var o9b: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, o9b).kind == payment_file::F_SYNTAX);
+    assert(o9b.len == 0);
+    // An other identifier with no id is a fault on both sides.
+    var doc10: u8[>..] = [];
+    replace_all(out, "<Othr><Id>NL-ORG-1</Id><SchmeNm><Cd>BANK</Cd></SchmeNm><Issr>Acme Bank</Issr></Othr>",
+               "<Othr><Issr>Acme Bank</Issr></Othr>", doc10);
+    assert(party_read(doc10[..], rp, ri, rbuf) == payment_file::F_SYNTAX);
+    var o10 = payment_file::new_other_id();
+    o10.issuer = "Acme Bank";
+    var pid4 = payment_file::new_party_id();
+    pid4.kind = payment_file::PARTY_ORG;
+    pid4.other = o10;
+    pays[0].debtor_detail.id = pid4;
+    var o10b: u8[>..] = [];
+    assert(payment_file::write_pain001(h, pays, items, wopts, lim, o10b).kind == payment_file::F_SYNTAX);
+    assert(o10b.len == 0);
+}
+
 fn main() {
     test_round_trip();
     test_newer_schema();
@@ -753,6 +1265,13 @@ fn main() {
     test_missing_amount();
     test_amount_overflow();
     test_blocks_tile_items();
+    test_party_roundtrip();
+    test_party_many();
+    test_party_order();
+    test_party_old_output();
+    test_party_overlength();
+    test_party_escape();
+    test_party_refusals();
     test_ach_round_trip();
     test_ach_writer_faults();
     test_ach_reader_faults();

@@ -16,18 +16,6 @@ import charset;
 import control;
 import read_pain;
 
-// opt_text reads the text of an element that may be absent. An absent
-// element gives an empty text. A present text passes the length and
-// character checks under its own name.
-fn opt_text(doc: xml::Doc&, node: i32, tag: const u8[:], max: i64, opts: PainOptions&,
-            lim: Limits&, buf: u8[>..]&) -> const u8[:], Fault {
-    if node < 0 { return "", no_fault(); }
-    let text = text_of(doc, node, buf);
-    let f = check_text(text, max, tag, opts.epc_charset, lim);
-    if f.kind != F_NONE { return "", f; }
-    return text, no_fault();
-}
-
 // read_party reads a party element: the name and the optional country.
 // The country holds two capital letters, as the writer demands.
 fn read_party(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,

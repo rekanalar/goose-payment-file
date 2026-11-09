@@ -23,7 +23,7 @@ Every parse is one linear pass with no recursion. Every size has a limit.
 Add these lines to the root file of the program that uses it:
 
 ```goose
-import payment_file from "rekanalar/goose-payment-file@v0.9.0";
+import payment_file from "rekanalar/goose-payment-file@v0.10.0";
 import xml from "rekanalar/goose-xml@v2.0.0";
 import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
@@ -45,8 +45,13 @@ the line to add.
 | `DirectDebit` | one collection: the amount, the mandate, the debtor, the remittance |
 | `new_debit_info()`, `new_direct_debit()` | the zero values of the two debit structs |
 | `GrpHeader` | the message id, the creation time, the count, the control sum, the initiator |
-| `PaymentInfo` | one payment block: the id, the flags, the debtor, the execution date, the item range |
-| `CreditTransfer` | one item: the ids, the amount, the creditor, the purpose, the remittance |
+| `PaymentInfo` | one payment block: the id, the flags, the debtor, the ultimate debtor, the execution date, the item range |
+| `CreditTransfer` | one item: the ids, the amount, the creditor, the ultimate parties, the purpose, the remittance |
+| `PostalAddress` | one postal address: the department, the sub department, the street name, the building number, the post code, the town name, the country subdivision, the country, the two address lines |
+| `OtherId` | one other identifier: the id, the scheme code, the scheme proprietary text, the issuer |
+| `PartyId` | the identification of a party: the kind, the BIC or BEI, the other identifier |
+| `PartyDetail` | what a party holds beyond its name: the address and the identification |
+| `new_address()`, `new_other_id()`, `new_party_id()`, `new_party_detail()` | the zero values of the four party structs |
 | `new_header()`, `new_payment()`, `new_transfer()` | the zero values of the three structs |
 | `default_limits()` | the safe limits |
 | `PainOptions` | the reader switches: `skip_control_sum_check`, `check_iban`, `epc_charset` |
@@ -106,6 +111,21 @@ An amount below zero is a fault in the reader and in the writer.
 The reader passes every IBAN to the check digits of
 `goose-payment-identifier`. A failure is a fault. The option
 `check_iban` turns the check off.
+
+A party of the pain.001 holds a name, a postal address and an
+identification. The address holds eight structured fields and two
+address lines. The identification is an organisation or a private
+person.
+
+An organisation holds a BIC or a BEI and one other identifier. The
+other identifier holds an id, and optionally a scheme code, a scheme
+proprietary text and an issuer. The country holds two capital letters.
+
+The creditor reference holds a type code, an issuer and a reference.
+The type code is one of `RADM`, `RPIN`, `FXDR`, `DISP`, `PUOR` and
+`SCOR`. The reader and the writer share the length limits of these
+fields. They refuse a text that is too long. They never truncate
+one.
 
 ## The NACHA file
 
@@ -377,6 +397,29 @@ sum, so the reader checks the count only.
   civil date, as the schema says.
 - **The reader reads the first remittance text only.** It ignores the
   other texts and the other structured fields.
+- **The pain.001 address holds two lines.** The schema allows seven.
+  The EPC rulebook allows two. The package keeps two. A third line is
+  a fault in the reader.
+- **The pain.001 party holds one other identifier.** The schema allows
+  one per party too. A second one is a fault in the reader.
+- **The pain.001 identification holds one kind.** A party holds an
+  organisation or a private person. Both in one party is a fault.
+- **The pain.001 reader ignores some elements.** It ignores the
+  address type. It ignores the country of residence and the contact
+  details. It ignores the date and place of birth. It ignores the
+  proprietary forms of a scheme name and of a reference type.
+- **The pain.008 direct debit holds no party fields.** The pain.001
+  carries the new fields. The pain.008 does not carry them yet.
+  Write the pain.001 for a file that needs them.
+- **The pain.001 writer writes all or nothing now.** The old form
+  wrote the header before it found a fault. A fault left the output
+  buffer with a partial file. Now the writer builds the whole message
+  first. A fault leaves the output buffer as it was. The pain.008
+  writer still writes straight into the buffer.
+- **A byte above 127 needs the EPC switch on.** The writer copies the
+  bytes of the model as they are. With the switch off, a model with a
+  byte above 127 gives a file that is not valid UTF-8. The reader of
+  this package refuses that file. Turn the switch on for such a model.
 - **After a fault the arrays hold partial results.** Do not use them.
 
 ## Security
@@ -412,6 +455,16 @@ Protections beyond the reference libraries:
   never expands an entity.
 - **No recursion, linear time.** A hostile file cannot overflow the
   stack or make the parser slow down.
+- **The pain.001 party fields are checked.** The country holds two
+  capital letters. The reference type holds one of `RADM`, `RPIN`,
+  `FXDR`, `DISP`, `PUOR` or `SCOR`. The reference library takes any
+  text.
+- **The pain.001 reader drops no value in silence.** It refuses a
+  third address line. It refuses a second other identifier. It
+  refuses a party with an organisation and a private identification.
+  The reference library reads the first value and loses the rest.
+- **The BIC of a party identification is checked.** The same rule as
+  the agent applies. The rule is looser than the schema pattern.
 
 NACHA protections beyond the reference library `moov-io/ach`:
 

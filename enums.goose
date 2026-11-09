@@ -203,3 +203,10 @@ fn uetr_ok(s: const u8[:]) -> bool {
     }
     return true;
 }
+
+// doc_type_ok tells whether the text is a document type code of the
+// creditor reference of a structured remittance.
+fn doc_type_ok(code: const u8[:]) -> bool {
+    return code == "RADM" || code == "RPIN" || code == "FXDR"
+        || code == "DISP" || code == "PUOR" || code == "SCOR";
+}
