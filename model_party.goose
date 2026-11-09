@@ -67,10 +67,12 @@ struct PartyDetail {
     id: PartyId,
 }
 
-// CdtrRef holds the three parts of a typed creditor reference: the
-// type code, the issuer and the reference itself.
+// CdtrRef holds the parts of a typed creditor reference: the type code
+// or the proprietary type text, the issuer and the reference itself.
+// The code and the proprietary text exclude each other.
 struct CdtrRef {
     code: const u8[:],
+    proprietary_type: const u8[:],
     issuer: const u8[:],
     ref: const u8[:],
 }
@@ -122,5 +124,5 @@ fn new_party_detail() -> PartyDetail {
 
 // new_cdtr_ref gives a creditor reference that holds nothing.
 fn new_cdtr_ref() -> CdtrRef {
-    return CdtrRef { code: "", issuer: "", ref: "" };
+    return CdtrRef { code: "", proprietary_type: "", issuer: "", ref: "" };
 }

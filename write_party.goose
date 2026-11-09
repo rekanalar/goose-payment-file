@@ -67,14 +67,8 @@ fn write_other(out: u8[>..]&, o: OtherId&, depth: i64, opts: PainWriteOptions,
     var f = text_leaf(out, "Id", o.id, MAX_35, true, depth + 1, opts, lim);
     if f.kind != F_NONE { return f; }
     if o.scheme_code.len > 0 || o.scheme_proprietary.len > 0 {
-        open(out, "SchmeNm", depth + 1, opts);
-        if o.scheme_code.len > 0 {
-            f = text_leaf(out, "Cd", o.scheme_code, MAX_4, true, depth + 2, opts, lim);
-        } else {
-            f = text_leaf(out, "Prtry", o.scheme_proprietary, MAX_35, true, depth + 2, opts, lim);
-        }
+        f = write_code_or_prtry(out, "SchmeNm", o.scheme_code, o.scheme_proprietary, depth + 1, opts, lim);
         if f.kind != F_NONE { return f; }
-        close(out, "SchmeNm", depth + 1, opts);
     }
     f = opt_leaf(out, "Issr", o.issuer, MAX_35, depth + 1, opts, lim);
     if f.kind != F_NONE { return f; }

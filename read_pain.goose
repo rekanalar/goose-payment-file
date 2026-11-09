@@ -420,6 +420,140 @@ fn parse_pain001(input: const u8[:], lim: Limits&, opts: PainOptions&,
     return no_fault();
 }
 
+// has_child_element tells whether an element holds a child element.
+// The parser keeps the text nodes, so a text alone is no child
+// element.
+fn has_child_element(doc: xml::Doc&, id: i32) -> bool {
+    if id < 0 { return false; }
+    var k = doc.nodes[id].first_child;
+    while k >= 0 {
+        if doc.nodes[k].kind == xml::KIND_ELEMENT { return true; }
+        k = doc.nodes[k].next_sibling;
+    }
+    return false;
+}
+
+// read_code_or_prtry reads a choice that holds a code or a proprietary
+// text. Both together are a fault. A second copy of either is a fault
+// too. An empty choice gives two empty texts and no fault. The tag
+// names the element in a fault.
+fn read_code_or_prtry(doc: xml::Doc&, id: i32, tag: const u8[:], opts: PainOptions&,
+                      lim: Limits&, buf: u8[>..]&) -> const u8[:], const u8[:], Fault {
+    var cds: i64 = 0;
+    var prtries: i64 = 0;
+    var k = doc.nodes[id].first_child;
+    while k >= 0 {
+        let m = doc.nodes[k];
+        if m.kind == xml::KIND_ELEMENT {
+            if m.local == "Cd" { cds += 1; }
+            else if m.local == "Prtry" { prtries += 1; }
+        }
+        k = m.next_sibling;
+    }
+    if cds > 1 { return "", "", fault(F_SYNTAX, 0, 0, tag, "the element holds two codes"); }
+    if prtries > 1 { return "", "", fault(F_SYNTAX, 0, 0, tag, "the element holds two proprietary texts"); }
+    let cd = child(doc, id, "Cd");
+    let prtry = child(doc, id, "Prtry");
+    if cd >= 0 && prtry >= 0 {
+        return "", "", fault(F_SYNTAX, 0, 0, tag, "the element holds a code and a proprietary text");
+    }
+    if cd >= 0 {
+        let t, f = opt_text(doc, cd, "Cd", MAX_4, opts, lim, buf);
+        if f.kind != F_NONE { return "", "", f; }
+        return t, "", no_fault();
+    }
+    if prtry >= 0 {
+        let t, f = opt_text(doc, prtry, "Prtry", MAX_35, opts, lim, buf);
+        if f.kind != F_NONE { return "", "", f; }
+        return "", t, no_fault();
+    }
+    return "", "", no_fault();
+}
+
+// read_date_element reads a date that the schema holds as a text or as
+// a Dt or a DtTm child. The later forms of the pain.001 hold the
+// execution date as a child element. A text and a child together, and
+// a second child, are faults, so no value is lost in silence.
+fn read_date_element(doc: xml::Doc&, id: i32, tag: const u8[:], buf: u8[>..]&) -> i32, i32, i32, Fault {
+    var dts: i64 = 0;
+    var dtms: i64 = 0;
+    var text_len: i64 = 0;
+    var k = doc.nodes[id].first_child;
+    while k >= 0 {
+        let m = doc.nodes[k];
+        if m.kind == xml::KIND_ELEMENT {
+            if m.local == "Dt" { dts += 1; }
+            else if m.local == "DtTm" { dtms += 1; }
+        } else if m.kind == xml::KIND_TEXT || m.kind == xml::KIND_CDATA {
+            var j: i64 = 0;
+            while j < m.content.len {
+                let b = m.content[j];
+                if b != ' ' && b != '\n' && b != '\r' && b != '\t' { text_len += 1; }
+                j += 1;
+            }
+        }
+        k = m.next_sibling;
+    }
+    if dts > 1 || dtms > 1 {
+        return 0, 0, 0, fault(F_SYNTAX, 0, 0, tag, "the date holds two child elements");
+    }
+    if dts + dtms > 0 && text_len > 0 {
+        return 0, 0, 0, fault(F_SYNTAX, 0, 0, tag, "the date holds a text and a child element");
+    }
+    let dt = child(doc, id, "Dt");
+    if dt >= 0 { return parse_date(text_of(doc, dt, buf), tag); }
+    let dtm = child(doc, id, "DtTm");
+    if dtm >= 0 { return parse_date(text_of(doc, dtm, buf), tag); }
+    return parse_date(text_of(doc, id, buf), tag);
+}
+
+// read_service_level reads the service level of a payment block. The
+// block holds the service level in its payment type element. A block
+// with no payment type element holds no service level. A second
+// payment type element, a second service level and a code with a child
+// element are faults, so no value is lost in silence. A service level
+// with a proprietary text and no code is a fault, because the model
+// names the element and holds the code only.
+fn read_service_level(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
+                      buf: u8[>..]&) -> const u8[:], Fault {
+    var tps: i64 = 0;
+    var k = doc.nodes[id].first_child;
+    while k >= 0 {
+        let m = doc.nodes[k];
+        if m.kind == xml::KIND_ELEMENT && m.local == "PmtTpInf" { tps += 1; }
+        k = m.next_sibling;
+    }
+    if tps > 1 {
+        return "", fault(F_SYNTAX, 0, 0, "PmtTpInf", "the block holds two payment type elements");
+    }
+    let tp = child(doc, id, "PmtTpInf");
+    if tp < 0 { return "", no_fault(); }
+    var sls: i64 = 0;
+    k = doc.nodes[tp].first_child;
+    while k >= 0 {
+        let m = doc.nodes[k];
+        if m.kind == xml::KIND_ELEMENT && m.local == "SvcLvl" { sls += 1; }
+        k = m.next_sibling;
+    }
+    if sls > 1 {
+        return "", fault(F_SYNTAX, 0, 0, "SvcLvl", "the payment type holds two service levels");
+    }
+    let sl = child(doc, tp, "SvcLvl");
+    if sl < 0 { return "", no_fault(); }
+    let cd = child(doc, sl, "Cd");
+    if cd < 0 {
+        return "", fault(F_SYNTAX, 0, 0, "SvcLvl", "the service level holds no code");
+    }
+    // A code that holds a child element reads as no text. That is a
+    // fault, because an empty code means the default service level.
+    if has_child_element(doc, cd) {
+        return "", fault(F_SYNTAX, 0, 0, "Cd", "the service level holds a child element");
+    }
+    let t, f = opt_text(doc, cd, "Cd", MAX_4, opts, lim, buf);
+    if f.kind != F_NONE { return "", f; }
+    return t, no_fault();
+}
+
 // parse_pmt_inf reads one payment block.
 fn parse_pmt_inf(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
                  payments: PaymentInfo[>..]&, cur: i64, items: CreditTransfer[>..]&,
@@ -484,13 +618,16 @@ fn parse_pmt_inf(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     }
     let rex = child(doc, id, "ReqdExctnDt");
     if rex >= 0 {
-        let y, m, d, rf = parse_date(text_of(doc, rex, buf), "ReqdExctnDt");
+        let y, m, d, rf = read_date_element(doc, rex, "ReqdExctnDt", buf);
         if rf.kind != F_NONE { return rf; }
         payments[cur].execution_year = y;
         payments[cur].execution_month = m;
         payments[cur].execution_day = d;
         payments[cur].has_execution_date = true;
     }
+    let sl, slf = read_service_level(doc, id, opts, lim, buf);
+    if slf.kind != F_NONE { return slf; }
+    payments[cur].service_level = sl;
     // The items.
     var c = doc.nodes[id].first_child;
     while c >= 0 {
@@ -605,6 +742,7 @@ fn parse_item(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
                 let r, cf = read_cdtr_ref(doc, refi, opts, lim, buf);
                 if cf.kind != F_NONE { return cf; }
                 items[cur].structured_type = r.code;
+                items[cur].structured_proprietary_type = r.proprietary_type;
                 items[cur].structured_issuer = r.issuer;
                 items[cur].structured_ref = r.ref;
             }

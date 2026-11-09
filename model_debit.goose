@@ -24,6 +24,7 @@ struct DebitInfo {
     ultimate_creditor_detail: PartyDetail,
     scheme_id: const u8[:],
     charge_bearer: const u8[:],
+    service_level: const u8[:],
     seq_type: const u8[:],
     instrument: const u8[:],
     collection_year: i32,
@@ -57,6 +58,7 @@ struct DirectDebit {
     purpose: const u8[:],
     remittance: const u8[:],
     structured_type: const u8[:],
+    structured_proprietary_type: const u8[:],
     structured_issuer: const u8[:],
     structured_ref: const u8[:],
 }
@@ -69,7 +71,7 @@ fn new_debit_info() -> DebitInfo {
         creditor_iban: "", creditor_bic: "",
         ultimate_creditor_name: "", ultimate_creditor_detail: new_party_detail(),
         scheme_id: "",
-        charge_bearer: "", seq_type: "", instrument: "",
+        charge_bearer: "", service_level: "", seq_type: "", instrument: "",
         collection_year: 0, collection_month: 0, collection_day: 0, has_collection_date: false,
         item_start: 0, item_count: 0,
     };
@@ -86,6 +88,7 @@ fn new_direct_debit() -> DirectDebit {
         ultimate_creditor_name: "", ultimate_creditor_detail: new_party_detail(),
         ultimate_debtor_name: "", ultimate_debtor_detail: new_party_detail(),
         purpose: "", remittance: "",
-        structured_type: "", structured_issuer: "", structured_ref: "",
+        structured_type: "", structured_proprietary_type: "",
+        structured_issuer: "", structured_ref: "",
     };
 }

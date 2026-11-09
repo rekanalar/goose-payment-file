@@ -36,6 +36,7 @@ struct PaymentInfo {
     batch_booking: bool,
     has_batch_booking: bool,
     charge_bearer: const u8[:],
+    service_level: const u8[:],
     debtor_name: const u8[:],
     debtor_iban: const u8[:],
     debtor_bic: const u8[:],
@@ -67,6 +68,7 @@ struct CreditTransfer {
     purpose: const u8[:],
     remittance: const u8[:],
     structured_type: const u8[:],
+    structured_proprietary_type: const u8[:],
     structured_issuer: const u8[:],
     structured_ref: const u8[:],
 }
@@ -90,6 +92,7 @@ fn new_header() -> GrpHeader {
 fn new_payment() -> PaymentInfo {
     return PaymentInfo {
         id: "", method: "", batch_booking: false, has_batch_booking: false, charge_bearer: "",
+        service_level: "",
         debtor_name: "", debtor_iban: "", debtor_bic: "",
         debtor_detail: new_party_detail(), ultimate_debtor_name: "",
         ultimate_debtor_detail: new_party_detail(),
@@ -108,6 +111,7 @@ fn new_transfer() -> CreditTransfer {
         ultimate_creditor_detail: new_party_detail(),
         ultimate_debtor_name: "", ultimate_debtor_detail: new_party_detail(),
         purpose: "", remittance: "",
-        structured_type: "", structured_issuer: "", structured_ref: "",
+        structured_type: "", structured_proprietary_type: "",
+        structured_issuer: "", structured_ref: "",
     };
 }

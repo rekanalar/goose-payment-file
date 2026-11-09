@@ -103,7 +103,11 @@ fn parse_debit_block(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
         blocks[cur].has_batch_booking = true;
         blocks[cur].batch_booking = v;
     }
-    // The payment type: the local instrument and the sequence type.
+    // The payment type: the service level, the local instrument and
+    // the sequence type.
+    let sl, slf = read_service_level(doc, id, opts, lim, buf);
+    if slf.kind != F_NONE { return slf; }
+    blocks[cur].service_level = sl;
     let tp = child(doc, id, "PmtTpInf");
     if tp >= 0 {
         let li = child(doc, tp, "LclInstrm");
@@ -301,6 +305,7 @@ fn parse_debit(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
                 let r, cf2 = read_cdtr_ref(doc, refi, opts, lim, buf);
                 if cf2.kind != F_NONE { return cf2; }
                 items[at].structured_type = r.code;
+                items[at].structured_proprietary_type = r.proprietary_type;
                 items[at].structured_issuer = r.issuer;
                 items[at].structured_ref = r.ref;
             }

@@ -23,7 +23,7 @@ Every parse is one linear pass with no recursion. Every size has a limit.
 Add these lines to the root file of the program that uses it:
 
 ```goose
-import payment_file from "rekanalar/goose-payment-file@v0.11.0";
+import payment_file from "rekanalar/goose-payment-file@v0.12.0";
 import xml from "rekanalar/goose-xml@v2.0.0";
 import finance from "rekanalar/goose-finance@v0.1.0";
 import payment_identifier from "rekanalar/goose-payment-identifier@v0.1.0";
@@ -41,12 +41,12 @@ the line to add.
 | `parse_pain001(input, lim, opts, header, payments, items, buf)` | reads any schema version into the model |
 | `write_pain008(header, blocks, items, opts, lim, out)` | writes the direct debit as pain.008.001.02 XML |
 | `parse_pain008(input, lim, opts, header, blocks, items, buf)` | reads a direct debit of `.001.02` to `.001.08` |
-| `DebitInfo` | one debit block: the creditor with its address and identification, the block ultimate creditor, the scheme id, the sequence type, the instrument, the collection date, the item range |
+| `DebitInfo` | one debit block: the creditor with its address and identification, the block ultimate creditor, the scheme id, the service level, the sequence type, the instrument, the collection date, the item range |
 | `DirectDebit` | one collection: the amount, the mandate, the debtor with its address and identification, the ultimate parties, the purpose, the remittance, the typed creditor reference |
 | `new_debit_info()`, `new_direct_debit()` | the zero values of the two debit structs |
 | `GrpHeader` | the message id, the creation time, the count, the control sum, the initiator |
-| `PaymentInfo` | one payment block: the id, the flags, the debtor, the ultimate debtor, the execution date, the item range |
-| `CreditTransfer` | one item: the ids, the amount, the creditor, the ultimate parties, the purpose, the remittance |
+| `PaymentInfo` | one payment block: the id, the flags, the service level, the debtor, the ultimate debtor, the execution date, the item range |
+| `CreditTransfer` | one item: the ids, the amount, the creditor, the ultimate parties, the purpose, the remittance, the typed creditor reference |
 | `PostalAddress` | one postal address: the department, the sub department, the street name, the building number, the post code, the town name, the country subdivision, the country, the two address lines |
 | `OtherId` | one other identifier: the id, the scheme code, the scheme proprietary text, the issuer |
 | `PartyId` | the identification of a party: the kind, the BIC or BEI, the other identifier, the LEI of a later file |
@@ -109,6 +109,18 @@ The writer needs the creation time and the execution date, because the
 schema makes both mandatory. It writes the elements in schema order.
 An amount below zero is a fault in the reader and in the writer.
 
+Both SEPA messages hold a payment type block with a service level. The
+writer writes the value of the model. An empty value means `SEPA`.
+The reader reads it back. The schema holds the code of the service
+level in a choice, and the package takes the code form only. A service
+level with a proprietary text instead of a code is a fault.
+
+A later pain.001 file holds the execution date as a child element of
+the element. The child holds a date or a date and a time. The reader
+takes the plain text of the earlier form and the child element of the
+later forms. The date of a date and a time text is the date. The
+collection date of the direct debit holds a plain date in every form.
+
 The reader passes every IBAN to the check digits of
 `goose-payment-identifier`. A failure is a fault. The option
 `check_iban` turns the check off.
@@ -135,10 +147,12 @@ The direct debit carries the same party fields as the credit transfer.
 The block creditor and the item debtor need a name. An ultimate party
 with an address or an identification and no name is a fault.
 
-The creditor reference holds a type code, an issuer and a reference.
-The type code is one of `RADM`, `RPIN`, `FXDR`, `DISP`, `PUOR` and
-`SCOR`. The schema makes the code element required in the type. The
-reader and the writer refuse a type that holds an issuer and no code.
+The creditor reference holds a reference type, an issuer and a
+reference. The type holds a code or a proprietary text, never both.
+The code is one of `RADM`, `RPIN`, `FXDR`, `DISP`, `PUOR` and `SCOR`.
+The schema makes the type element required in the reference.
+A reference with an issuer and no type is a fault.
+A reference with the code and the proprietary text together is a fault.
 
 The reader and the writer share the length limits of these
 fields. They refuse a text that is too long. They never truncate
@@ -434,9 +448,18 @@ sum, so the reader checks the count only.
   back.** The schema allows 140 characters. The EPC rulebook allows
   70. The reader takes 140. The writer keeps 70. Such a file needs a
   shorter name, or a writer by hand.
-- **A reference type needs its code.** The schema makes the code
-  element required in the type. The writer refuses a type that holds
-  an issuer and no code. The reader refuses such a file.
+- **The pain.001 writer writes the payment type block now.** The old
+  form wrote none. The block holds the service level `SEPA`. The
+  schema makes the element optional, but the SEPA rulebook asks for
+  it, so the writer writes it always. A file that the reader reads
+  without one gains the block when the writer writes it back.
+- **The service level takes the code form only.** The schema allows a
+  proprietary text instead of a code. The model holds the code only,
+  so the reader refuses a file whose service level holds a proprietary
+  text.
+- **A reference type needs its type element.** The type holds a code
+  or a proprietary text. A reference with an issuer and no type is a
+  fault. The writer refuses it and the reader refuses such a file.
 - **The writer of a SEPA message writes all or nothing now.** The old
   form wrote the header before any check. A fault left a partial file
   in the buffer. Now the writer builds the whole message first. A
@@ -495,9 +518,19 @@ Protections beyond the reference libraries:
   refuses an address line with no text. It refuses an identification
   with two LEIs.
 
-- **The reader refuses a reference type with no code.** The schema
-  makes the code element required in the type. An issuer alone is a
-  fault.
+- **The reader refuses a reference type with no type element.** The
+  schema makes the type element required in the reference. An issuer
+  alone is a fault. It refuses a reference that holds the code and the
+  proprietary text together.
+
+- **The reader refuses a service level with no code.** The schema
+  allows a proprietary text instead of a code. The package holds the
+  code form only. A code that holds a child element is a fault.
+- **The reader refuses a second copy.**
+  A block with two payment type elements or two service levels is a fault. So is a
+  type with two proprietary texts. An execution date with two children
+  is a fault. So is a date that holds a text and a child element.
+  The first copy never hides the second.
 - **The BIC of a party identification is checked.** The same rule as
   the agent applies. The rule is looser than the schema pattern.
 - **The LEI of a party identification is checked.** It holds 20

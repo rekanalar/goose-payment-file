@@ -110,9 +110,8 @@ fn write_debit_block(out: u8[>..]&, blk: DebitInfo&, items: DirectDebit[>..]&,
     leaf(out, "NbOfTxs", nb, 3, opts);
     leaf(out, "CtrlSum", cs, 3, opts);
     open(out, "PmtTpInf", 3, opts);
-    open(out, "SvcLvl", 4, opts);
-    leaf(out, "Cd", "SEPA", 5, opts);
-    close(out, "SvcLvl", 4, opts);
+    let sf = write_svc_lvl(out, blk.service_level, 4, opts, lim);
+    if sf.kind != F_NONE { return sf; }
     open(out, "LclInstrm", 4, opts);
     leaf(out, "Cd", blk.instrument, 5, opts);
     close(out, "LclInstrm", 4, opts);
@@ -178,7 +177,8 @@ fn write_debit(out: u8[>..]&, t: DirectDebit&, opts: PainWriteOptions, lim: Limi
     f = party_full(out, "UltmtDbtr", t.ultimate_debtor_name, MAX_70, t.ultimate_debtor_detail, false, 4, opts, lim);
     if f.kind != F_NONE { return f; }
     let rf = write_remittance(out, t.purpose, t.remittance, t.structured_type,
-                              t.structured_issuer, t.structured_ref, 4, opts, lim);
+                              t.structured_proprietary_type, t.structured_issuer,
+                              t.structured_ref, 4, opts, lim);
     if rf.kind != F_NONE { return rf; }
     close(out, "DrctDbtTxInf", 3, opts);
     return no_fault();

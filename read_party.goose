@@ -112,20 +112,10 @@ fn read_other(doc: xml::Doc&, id: i32, opts: PainOptions&, lim: Limits&,
     o.id = oid;
     let sch = child(doc, id, "SchmeNm");
     if sch >= 0 {
-        let cd = child(doc, sch, "Cd");
-        let prtry = child(doc, sch, "Prtry");
-        if cd >= 0 && prtry >= 0 {
-            return o, fault(F_SYNTAX, 0, 0, "SchmeNm", "the scheme holds a code and a proprietary text");
-        }
-        if cd >= 0 {
-            let t, f1 = opt_text(doc, cd, "Cd", MAX_4, opts, lim, buf);
-            if f1.kind != F_NONE { return o, f1; }
-            o.scheme_code = t;
-        } else if prtry >= 0 {
-            let t, f2 = opt_text(doc, prtry, "Prtry", MAX_35, opts, lim, buf);
-            if f2.kind != F_NONE { return o, f2; }
-            o.scheme_proprietary = t;
-        }
+        let code, prop, f = read_code_or_prtry(doc, sch, "SchmeNm", opts, lim, buf);
+        if f.kind != F_NONE { return o, f; }
+        o.scheme_code = code;
+        o.scheme_proprietary = prop;
     }
     let issr, f3 = opt_text(doc, child(doc, id, "Issr"), "Issr", MAX_35, opts, lim, buf);
     if f3.kind != F_NONE { return o, f3; }
@@ -293,14 +283,14 @@ fn read_cdtr_ref(doc: xml::Doc&, refi: i32, opts: PainOptions&, lim: Limits&,
     if tp >= 0 {
         let cdp = child(doc, tp, "CdOrPrtry");
         if cdp >= 0 {
-            let cd = child(doc, cdp, "Cd");
-            if cd < 0 {
-                return r, fault(F_SYNTAX, 0, 0, "CdOrPrtry", "the reference type holds no code");
+            let code, prop, f0 = read_code_or_prtry(doc, cdp, "CdOrPrtry", opts, lim, buf);
+            if f0.kind != F_NONE { return r, f0; }
+            if code.len == 0 && prop.len == 0 {
+                return r, fault(F_SYNTAX, 0, 0, "CdOrPrtry", "the reference type holds no code and no proprietary text");
             }
-            r.code = text_of(doc, cd, buf);
-            let tf = check_text(r.code, MAX_4, "Cd", opts.epc_charset, lim);
-            if tf.kind != F_NONE { return r, tf; }
-            if !doc_type_ok(r.code) {
+            r.code = code;
+            r.proprietary_type = prop;
+            if code.len > 0 && !doc_type_ok(code) {
                 return r, fault(F_SYNTAX, 0, 0, "Cd", "the document type is not RADM, RPIN, FXDR, DISP, PUOR or SCOR");
             }
         }

@@ -985,12 +985,15 @@ fn test_party_order() {
     assert(dept > adr2 && st > dept && ctry > st && line > ctry);
 }
 
-// A model without the new fields writes the same bytes as before.
+// A model without the new fields writes the same bytes as before, save
+// for the payment type block that the writer now writes.
 fn test_party_old_output() {
     var out: u8[>..] = [];
     var wopts = payment_file::PainWriteOptions { epc_charset: false, indent: false };
     assert(sample(wopts, out) == 0);
-    assert(out[..] == OLD_OUTPUT);
+    var stripped: u8[>..] = [];
+    replace_all(out, "<PmtTpInf><SvcLvl><Cd>SEPA</Cd></SvcLvl></PmtTpInf>", "", stripped);
+    assert(stripped[..] == OLD_OUTPUT);
 }
 
 // A text one byte over its limit is a fault on both sides.
@@ -1631,6 +1634,262 @@ fn test_debit_reader_refusals() {
     assert(read_debit_kind(j, false, lim) == payment_file::F_SYNTAX);
 }
 
+
+// A credit transfer with a service level and a reference type of its
+// own. An empty text means the default.
+fn sample_transfer(opts: payment_file::PainWriteOptions, level: const u8[:],
+                   code: const u8[:], prop: const u8[:], out: u8[>..]&) -> i32 {
+    var items: payment_file::CreditTransfer[>..] = [];
+    var t = payment_file::new_transfer();
+    t.end_to_end_id = "E2E-1";
+    let m, ok = finance::money(100, "EUR");
+    if !ok { return -1; }
+    t.amount = m;
+    t.creditor_name = "Creditor One";
+    t.creditor_iban = "DE89370400440532013000";
+    t.structured_type = code;
+    t.structured_proprietary_type = prop;
+    t.structured_ref = "RF18539007547034";
+    items.push(t);
+    var pays: payment_file::PaymentInfo[>..] = [];
+    var p = payment_file::new_payment();
+    p.id = "PMT-1";
+    p.service_level = level;
+    p.debtor_name = "Acme Trading Ltd";
+    p.debtor_iban = "NL91ABNA0417164300";
+    p.execution_year = 2026; p.execution_month = 12; p.execution_day = 1;
+    p.has_execution_date = true;
+    p.item_start = 0;
+    p.item_count = items.len as i32;
+    pays.push(p);
+    var h = payment_file::new_header();
+    h.message_id = "MSG-1";
+    h.has_creation = true;
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    h.initiator = "Acme Trading Ltd";
+    var lim = payment_file::default_limits();
+    let f = payment_file::write_pain001(h, pays, items, opts, lim, out);
+    return f.kind;
+}
+
+// A direct debit with a service level of its own.
+fn sample_debit_level(opts: payment_file::PainWriteOptions, level: const u8[:], out: u8[>..]&) -> i32 {
+    var items: payment_file::DirectDebit[>..] = [];
+    var t = payment_file::new_direct_debit();
+    t.end_to_end_id = "E2E-1";
+    let m, ok = finance::money(100, "EUR");
+    if !ok { return -1; }
+    t.amount = m;
+    t.mandate_id = "MANDATE-1";
+    t.signature_year = 2025; t.signature_month = 6; t.signature_day = 1;
+    t.has_signature_date = true;
+    t.debtor_name = "Debtor One";
+    t.debtor_iban = "DE89370400440532013000";
+    items.push(t);
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var b = payment_file::new_debit_info();
+    b.id = "DD-1";
+    b.service_level = level;
+    b.creditor_name = "Club Treasurer";
+    b.creditor_iban = "NL91ABNA0417164300";
+    b.scheme_id = "DE98ZZZ09999999999";
+    b.seq_type = "RCUR";
+    b.instrument = "CORE";
+    b.collection_year = 2026; b.collection_month = 12; b.collection_day = 1;
+    b.has_collection_date = true;
+    b.item_count = 1;
+    blocks.push(b);
+    var h = payment_file::new_header();
+    h.message_id = "DD-MSG-1";
+    h.has_creation = true;
+    h.creation_year = 2026; h.creation_month = 11; h.creation_day = 9;
+    h.initiator = "Club Treasurer";
+    var lim = payment_file::default_limits();
+    let f = payment_file::write_pain008(h, blocks, items, opts, lim, out);
+    return f.kind;
+}
+
+// The pain.001 writer writes the payment type block with the service
+// level. The pain.008 writer writes the same value.
+fn test_service_level() {
+    var out: u8[>..] = [];
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    assert(sample(wopts, out) == 0);
+    let pinf = find(out, "<PmtInf>");
+    let csum = find_from(out, "<CtrlSum>", pinf);
+    let tp = find_from(out, "<PmtTpInf>", pinf);
+    let sl = find_from(out, "<SvcLvl><Cd>SEPA</Cd></SvcLvl>", tp);
+    let exdt = find_from(out, "<ReqdExctnDt>", pinf);
+    assert(pinf >= 0 && csum > pinf && tp > csum && sl > tp && exdt > sl);
+    var dout: u8[>..] = [];
+    assert(sample_debit(wopts, dout) == 0);
+    assert(find(dout, "<SvcLvl><Cd>SEPA</Cd></SvcLvl>") >= 0);
+    // The model holds the service level of the block.
+    var own: u8[>..] = [];
+    assert(sample_transfer(wopts, "PRPT", "", "", own) == 0);
+    assert(find(own, "<SvcLvl><Cd>PRPT</Cd></SvcLvl>") >= 0);
+    // A service level above its limit is a fault.
+    var bad: u8[>..] = [];
+    assert(sample_transfer(wopts, "SEPTX", "", "", bad) == payment_file::F_LIMIT);
+}
+
+// swap_kind replaces one text of a pain.001 document and returns the
+// kind of the fault that the reader gives.
+fn swap_kind(tpl: const u8[:], from: const u8[:], to: const u8[:]) -> i32 {
+    var lim = payment_file::default_limits();
+    var ropts = payment_file::PainOptions { skip_control_sum_check: true, check_iban: true, epc_charset: true };
+    var base: u8[>..] = [];
+    put(base, tpl);
+    var doc: u8[>..] = [];
+    replace_all(base, from, to, doc);
+    var h = payment_file::new_header();
+    var pays: payment_file::PaymentInfo[>..] = [];
+    var items: payment_file::CreditTransfer[>..] = [];
+    var buf: u8[>..] = [];
+    let r = payment_file::parse_pain001(doc, lim, ropts, h, pays, items, buf);
+    return r.kind;
+}
+
+// The reader takes the later pain.001 forms, where the execution date
+// holds a child element.
+fn test_later_forms() {
+    var lim = payment_file::default_limits();
+    var ropts = payment_file::PainOptions { skip_control_sum_check: true, check_iban: true, epc_charset: true };
+    let tpl = """
+<?xml version="1.0"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.09">
+<CstmrCdtTrfInitn><GrpHdr><MsgId>M1</MsgId><InitgPty><Nm>Init</Nm></InitgPty></GrpHdr>
+<PmtInf><PmtInfId>P1</PmtInfId><PmtTpInf><SvcLvl><Cd>SEPA</Cd></SvcLvl></PmtTpInf>
+<ReqdExctnDt>2026-12-01</ReqdExctnDt>
+<Dbtr><Nm>Debtor</Nm><Id><OrgId><AnyBIC>ABNANL2A</AnyBIC></OrgId></Id></Dbtr>
+<CdtTrfTxInf><PmtId><EndToEndId>E1</EndToEndId></PmtId><Amt><InstdAmt Ccy="EUR">1.00</InstdAmt></Amt>
+<Cdtr><Nm>Cred</Nm></Cdtr><CdtrAcct><Id><IBAN>BE68539007547034</IBAN></Id></CdtrAcct></CdtTrfTxInf>
+</PmtInf></CstmrCdtTrfInitn></Document>
+""";
+    // The plain text of the earlier form.
+    var h = payment_file::new_header();
+    var pays: payment_file::PaymentInfo[>..] = [];
+    var items: payment_file::CreditTransfer[>..] = [];
+    var buf: u8[>..] = [];
+    let r = payment_file::parse_pain001(tpl, lim, ropts, h, pays, items, buf);
+    if r.kind != 0 { print("FAIL later plain ", payment_file::kind_name(r.kind), " ", r.tag, " ", r.detail, "\n"); }
+    assert(r.kind == payment_file::F_NONE);
+    assert(pays[0].execution_year == 2026 && pays[0].execution_month == 12 && pays[0].execution_day == 1);
+    assert(pays[0].service_level == "SEPA");
+    // The later form holds the date as a child element.
+    var base: u8[>..] = [];
+    put(base, tpl);
+    var dt_doc: u8[>..] = [];
+    replace_all(base, "<ReqdExctnDt>2026-12-01</ReqdExctnDt>", "<ReqdExctnDt><Dt>2026-12-02</Dt></ReqdExctnDt>", dt_doc);
+    var h2 = payment_file::new_header();
+    var pays2: payment_file::PaymentInfo[>..] = [];
+    var items2: payment_file::CreditTransfer[>..] = [];
+    var buf2: u8[>..] = [];
+    let r2 = payment_file::parse_pain001(dt_doc, lim, ropts, h2, pays2, items2, buf2);
+    if r2.kind != 0 { print("FAIL later dt ", payment_file::kind_name(r2.kind), " ", r2.tag, " ", r2.detail, "\n"); }
+    assert(r2.kind == payment_file::F_NONE);
+    assert(pays2[0].execution_day == 2);
+    // The date and the time form.
+    var dtm_doc: u8[>..] = [];
+    replace_all(base, "<ReqdExctnDt>2026-12-01</ReqdExctnDt>", "<ReqdExctnDt><DtTm>2026-12-03T09:15:00</DtTm></ReqdExctnDt>", dtm_doc);
+    var h3 = payment_file::new_header();
+    var pays3: payment_file::PaymentInfo[>..] = [];
+    var items3: payment_file::CreditTransfer[>..] = [];
+    var buf3: u8[>..] = [];
+    let r3 = payment_file::parse_pain001(dtm_doc, lim, ropts, h3, pays3, items3, buf3);
+    if r3.kind != 0 { print("FAIL later dtm ", payment_file::kind_name(r3.kind), " ", r3.tag, " ", r3.detail, "\n"); }
+    assert(r3.kind == payment_file::F_NONE);
+    assert(pays3[0].execution_day == 3);
+    // An execution date with no text and no child element is a fault.
+    var empty_doc: u8[>..] = [];
+    replace_all(base, "<ReqdExctnDt>2026-12-01</ReqdExctnDt>", "<ReqdExctnDt></ReqdExctnDt>", empty_doc);
+    var h4 = payment_file::new_header();
+    var pays4: payment_file::PaymentInfo[>..] = [];
+    var items4: payment_file::CreditTransfer[>..] = [];
+    var buf4: u8[>..] = [];
+    let r4 = payment_file::parse_pain001(empty_doc, lim, ropts, h4, pays4, items4, buf4);
+    assert(r4.kind == payment_file::F_DATE);
+    // A second child, a text with a child, two payment type elements,
+    // two service levels and a code with a child element are faults.
+    let rd = "<ReqdExctnDt>2026-12-01</ReqdExctnDt>";
+    assert(swap_kind(tpl, rd, "<ReqdExctnDt><Dt>2026-12-02</Dt><Dt>2026-12-03</Dt></ReqdExctnDt>") == payment_file::F_SYNTAX);
+    assert(swap_kind(tpl, rd, "<ReqdExctnDt>2026-12-01<Dt>2026-12-02</Dt></ReqdExctnDt>") == payment_file::F_SYNTAX);
+    let tp = "<PmtTpInf><SvcLvl><Cd>SEPA</Cd></SvcLvl></PmtTpInf>";
+    assert(swap_kind(tpl, tp, "<PmtTpInf><SvcLvl><Cd>SEPA</Cd></SvcLvl></PmtTpInf><PmtTpInf><SvcLvl><Cd>SEPA</Cd></SvcLvl></PmtTpInf>") == payment_file::F_SYNTAX);
+    assert(swap_kind(tpl, tp, "<PmtTpInf><SvcLvl><Cd>SEPA</Cd></SvcLvl><SvcLvl><Cd>SEPA</Cd></SvcLvl></PmtTpInf>") == payment_file::F_SYNTAX);
+    assert(swap_kind(tpl, "<Cd>SEPA</Cd>", "<Cd><X>1</X></Cd>") == payment_file::F_SYNTAX);
+    assert(swap_kind(tpl, "<Cd>SEPA</Cd>", "<Prtry>X</Prtry>") == payment_file::F_SYNTAX);
+}
+
+// The proprietary form of the reference type reads and writes.
+fn test_proprietary_reference() {
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var out: u8[>..] = [];
+    assert(sample_transfer(wopts, "", "", "CUSTOM", out) == 0);
+    assert(find(out, "<CdOrPrtry><Prtry>CUSTOM</Prtry></CdOrPrtry>") >= 0);
+    assert(find(out, "<CdOrPrtry><Cd>") < 0);
+    // The reader takes the proprietary text.
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    var lim = payment_file::default_limits();
+    var h = payment_file::new_header();
+    var pays: payment_file::PaymentInfo[>..] = [];
+    var items: payment_file::CreditTransfer[>..] = [];
+    var buf: u8[>..] = [];
+    let text: const u8[:] = out[..];
+    let r = payment_file::parse_pain001(text, lim, ropts, h, pays, items, buf);
+    if r.kind != 0 { print("FAIL prop read ", payment_file::kind_name(r.kind), " ", r.tag, " ", r.detail, "\n"); }
+    assert(r.kind == payment_file::F_NONE);
+    assert(items[0].structured_proprietary_type == "CUSTOM");
+    assert(items[0].structured_type.len == 0);
+    assert(items[0].structured_ref == "RF18539007547034");
+    // A model with a code and a proprietary text is a fault, and the
+    // output buffer keeps its old bytes.
+    var out2: u8[>..] = [];
+    out2.push('O'); out2.push('L'); out2.push('D');
+    assert(sample_transfer(wopts, "", "SCOR", "CUSTOM", out2) == payment_file::F_SYNTAX);
+    assert(out2.len == 3 && out2[0] == 'O');
+    // The code form still writes.
+    var out3: u8[>..] = [];
+    assert(sample_transfer(wopts, "", "SCOR", "", out3) == 0);
+    assert(find(out3, "<CdOrPrtry><Cd>SCOR</Cd></CdOrPrtry>") >= 0);
+}
+
+// The service level comes back over a round trip in both messages.
+fn test_service_level_round_trip() {
+    var wopts = payment_file::PainWriteOptions { epc_charset: true, indent: false };
+    var ropts = payment_file::PainOptions { skip_control_sum_check: false, check_iban: true, epc_charset: true };
+    var lim = payment_file::default_limits();
+    var out: u8[>..] = [];
+    assert(sample(wopts, out) == 0);
+    var h = payment_file::new_header();
+    var pays: payment_file::PaymentInfo[>..] = [];
+    var items: payment_file::CreditTransfer[>..] = [];
+    var buf: u8[>..] = [];
+    let text: const u8[:] = out[..];
+    let r = payment_file::parse_pain001(text, lim, ropts, h, pays, items, buf);
+    assert(r.kind == payment_file::F_NONE);
+    assert(pays[0].service_level == "SEPA");
+    var dout: u8[>..] = [];
+    assert(sample_debit(wopts, dout) == 0);
+    var h2 = payment_file::new_header();
+    var blocks: payment_file::DebitInfo[>..] = [];
+    var items2: payment_file::DirectDebit[>..] = [];
+    var buf2: u8[>..] = [];
+    let r2 = payment_file::parse_pain008(dout, lim, ropts, h2, blocks, items2, buf2);
+    assert(r2.kind == payment_file::F_NONE);
+    assert(blocks[0].service_level == "SEPA");
+    // The model holds the service level of the block.
+    var own: u8[>..] = [];
+    assert(sample_debit_level(wopts, "PRPT", own) == 0);
+    assert(find(own, "<SvcLvl><Cd>PRPT</Cd></SvcLvl>") >= 0);
+    var h3 = payment_file::new_header();
+    var blocks3: payment_file::DebitInfo[>..] = [];
+    var items3: payment_file::DirectDebit[>..] = [];
+    var buf3: u8[>..] = [];
+    let r3 = payment_file::parse_pain008(own, lim, ropts, h3, blocks3, items3, buf3);
+    assert(r3.kind == payment_file::F_NONE);
+    assert(blocks3[0].service_level == "PRPT");
+}
+
 fn main() {
     test_round_trip();
     test_newer_schema();
@@ -1650,6 +1909,10 @@ fn main() {
     test_debit_empty_names();
     test_debit_old_model_bytes();
     test_debit_reader_refusals();
+    test_service_level();
+    test_later_forms();
+    test_proprietary_reference();
+    test_service_level_round_trip();
     test_code_lists();
     test_missing_amount();
     test_amount_overflow();

@@ -232,7 +232,7 @@ fn write_pain001(header: GrpHeader, payments: PaymentInfo[>..]&, items: CreditTr
 }
 
 // write_pmt_inf writes one payment block and its items.
-fn write_pmt_inf(out: u8[>..]&, pay: PaymentInfo, items: CreditTransfer[>..]&,
+fn write_pmt_inf(out: u8[>..]&, pay: PaymentInfo&, items: CreditTransfer[>..]&,
                  opts: PainWriteOptions, lim: Limits&) -> Fault {
     let start = pay.item_start as i64;
     let count = pay.item_count as i64;
@@ -262,6 +262,12 @@ fn write_pmt_inf(out: u8[>..]&, pay: PaymentInfo, items: CreditTransfer[>..]&,
     put_count(&nb, count);
     leaf(out, "NbOfTxs", nb, 3, opts);
     leaf(out, "CtrlSum", cs, 3, opts);
+    // The payment type block holds the service level. It sits between
+    // the control sum and the execution date.
+    open(out, "PmtTpInf", 3, opts);
+    f = write_svc_lvl(out, pay.service_level, 4, opts, lim);
+    if f.kind != F_NONE { return f; }
+    close(out, "PmtTpInf", 3, opts);
     f = date_leaf(out, "ReqdExctnDt", pay.execution_year, pay.execution_month, pay.execution_day, 3, opts);
     if f.kind != F_NONE { return f; }
     f = party_full(out, "Dbtr", pay.debtor_name, MAX_70, pay.debtor_detail, true, 3, opts, lim);
@@ -287,31 +293,68 @@ fn write_pmt_inf(out: u8[>..]&, pay: PaymentInfo, items: CreditTransfer[>..]&,
     return no_fault();
 }
 
+// write_svc_lvl writes the service level of a payment block. The
+// empty text means the service level SEPA. The code list is external,
+// so the package takes any code of the length of the schema.
+fn write_svc_lvl(out: u8[>..]&, level: const u8[:], depth: i64,
+                 opts: PainWriteOptions, lim: Limits&) -> Fault {
+    open(out, "SvcLvl", depth, opts);
+    var f = no_fault();
+    if level.len == 0 {
+        f = text_leaf(out, "Cd", "SEPA", MAX_4, true, depth + 1, opts, lim);
+    } else {
+        f = text_leaf(out, "Cd", level, MAX_4, true, depth + 1, opts, lim);
+    }
+    if f.kind != F_NONE { return f; }
+    close(out, "SvcLvl", depth, opts);
+    return no_fault();
+}
+
+// write_code_or_prtry writes a choice that holds a code or a
+// proprietary text. Both together are a fault. The container is the
+// element of the choice.
+fn write_code_or_prtry(out: u8[>..]&, container: const u8[:], code: const u8[:],
+                       prop: const u8[:], depth: i64, opts: PainWriteOptions,
+                       lim: Limits&) -> Fault {
+    if code.len > 0 && prop.len > 0 {
+        return fault(F_SYNTAX, 0, 0, container, "the element holds a code and a proprietary text");
+    }
+    open(out, container, depth, opts);
+    var f = no_fault();
+    if code.len > 0 {
+        f = text_leaf(out, "Cd", code, MAX_4, true, depth + 1, opts, lim);
+    } else if prop.len > 0 {
+        f = text_leaf(out, "Prtry", prop, MAX_35, true, depth + 1, opts, lim);
+    }
+    if f.kind != F_NONE { return f; }
+    close(out, container, depth, opts);
+    return no_fault();
+}
+
 // write_item writes one credit transfer item.
 // write_cdtr_ref writes the structured creditor reference: the type
-// with its code and issuer, then the reference. The schema makes the
-// three parts optional.
-fn write_cdtr_ref(out: u8[>..]&, code: const u8[:], issuer: const u8[:],
-                  ref_txt: const u8[:], depth: i64, opts: PainWriteOptions,
-                  lim: Limits&) -> Fault {
+// with its code or its proprietary text, then the issuer, then the
+// reference. The schema makes the three parts optional.
+fn write_cdtr_ref(out: u8[>..]&, code: const u8[:], prop: const u8[:],
+                  issuer: const u8[:], ref_txt: const u8[:], depth: i64,
+                  opts: PainWriteOptions, lim: Limits&) -> Fault {
     if code.len > 0 && !doc_type_ok(code) {
         return fault(F_SYNTAX, 0, 0, "Cd", "the document type is not RADM, RPIN, FXDR, DISP, PUOR or SCOR");
     }
-    // The schema makes the code element required inside the type. An
-    // issuer with no code would write a type with no code element.
-    if issuer.len > 0 && code.len == 0 {
+    // The schema makes the type element required in the reference
+    // type. An issuer with no type would write a type with no type
+    // element.
+    if issuer.len > 0 && code.len == 0 && prop.len == 0 {
         return fault(F_SYNTAX, 0, 0, "Issr", "the reference type holds an issuer and no code");
     }
     open(out, "Strd", depth, opts);
     open(out, "CdtrRefInf", depth + 1, opts);
     var f = no_fault();
-    if code.len > 0 || issuer.len > 0 {
+    if code.len > 0 || prop.len > 0 || issuer.len > 0 {
         open(out, "Tp", depth + 2, opts);
-        if code.len > 0 {
-            open(out, "CdOrPrtry", depth + 3, opts);
-            f = text_leaf(out, "Cd", code, MAX_4, true, depth + 4, opts, lim);
+        if code.len > 0 || prop.len > 0 {
+            f = write_code_or_prtry(out, "CdOrPrtry", code, prop, depth + 3, opts, lim);
             if f.kind != F_NONE { return f; }
-            close(out, "CdOrPrtry", depth + 3, opts);
         }
         if issuer.len > 0 {
             f = text_leaf(out, "Issr", issuer, MAX_35, true, depth + 3, opts, lim);
@@ -333,15 +376,16 @@ fn write_cdtr_ref(out: u8[>..]&, code: const u8[:], issuer: const u8[:],
 // text, then the structured creditor reference. An empty text writes
 // no element. Both SEPA messages share this shape.
 fn write_remittance(out: u8[>..]&, purpose: const u8[:], remittance: const u8[:],
-                    code: const u8[:], issuer: const u8[:], ref_txt: const u8[:],
-                    depth: i64, opts: PainWriteOptions, lim: Limits&) -> Fault {
+                    code: const u8[:], prop: const u8[:], issuer: const u8[:],
+                    ref_txt: const u8[:], depth: i64, opts: PainWriteOptions,
+                    lim: Limits&) -> Fault {
     if purpose.len > 0 {
         open(out, "Purp", depth, opts);
         let f = text_leaf(out, "Cd", purpose, MAX_4, true, depth + 1, opts, lim);
         if f.kind != F_NONE { return f; }
         close(out, "Purp", depth, opts);
     }
-    let has_ref = ref_txt.len > 0 || code.len > 0 || issuer.len > 0;
+    let has_ref = ref_txt.len > 0 || code.len > 0 || prop.len > 0 || issuer.len > 0;
     if remittance.len > 0 || has_ref {
         open(out, "RmtInf", depth, opts);
         if remittance.len > 0 {
@@ -349,7 +393,7 @@ fn write_remittance(out: u8[>..]&, purpose: const u8[:], remittance: const u8[:]
             if f.kind != F_NONE { return f; }
         }
         if has_ref {
-            let f = write_cdtr_ref(out, code, issuer, ref_txt, depth + 1, opts, lim);
+            let f = write_cdtr_ref(out, code, prop, issuer, ref_txt, depth + 1, opts, lim);
             if f.kind != F_NONE { return f; }
         }
         close(out, "RmtInf", depth, opts);
@@ -357,7 +401,7 @@ fn write_remittance(out: u8[>..]&, purpose: const u8[:], remittance: const u8[:]
     return no_fault();
 }
 
-fn write_item(out: u8[>..]&, t: CreditTransfer, opts: PainWriteOptions, lim: Limits&) -> Fault {
+fn write_item(out: u8[>..]&, t: CreditTransfer&, opts: PainWriteOptions, lim: Limits&) -> Fault {
     var f = no_fault();
     open(out, "CdtTrfTxInf", 3, opts);
     open(out, "PmtId", 4, opts);
@@ -385,7 +429,8 @@ fn write_item(out: u8[>..]&, t: CreditTransfer, opts: PainWriteOptions, lim: Lim
     f = party_full(out, "UltmtCdtr", t.ultimate_creditor_name, MAX_70, t.ultimate_creditor_detail, false, 4, opts, lim);
     if f.kind != F_NONE { return f; }
     let rf = write_remittance(out, t.purpose, t.remittance, t.structured_type,
-                              t.structured_issuer, t.structured_ref, 4, opts, lim);
+                              t.structured_proprietary_type, t.structured_issuer,
+                              t.structured_ref, 4, opts, lim);
     if rf.kind != F_NONE { return rf; }
     close(out, "CdtTrfTxInf", 3, opts);
     return no_fault();
